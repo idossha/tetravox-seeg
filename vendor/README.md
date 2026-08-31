@@ -1,7 +1,11 @@
 # vendor/
 
-`tetravox-module-sdk-1-0.2.0.tgz` — the module SDK, emitted from the Tetravox tree by
-`node scripts/emit-module-sdk.mjs` at commit `53072d7` (host API 1, core 0.2.0).
+`tetravox-module-sdk-1-0.3.1.tgz` — the module SDK, emitted from the Tetravox tree by
+`node scripts/emit-module-sdk.mjs` (host API 1, core 0.3.1). It carries §13.10's additions:
+`ModuleHost.ui.placement/setPlacement/onPlacement` and the manifest's optional `ui` block.
+
+`tetravox-module-sdk-1-0.2.0.tgz` — the previous one, at commit `53072d7` (host API 1, core 0.2.0),
+kept only so a checkout of an older tag still installs.
 
 It is here rather than pinned by URL because the SDK release asset does not exist yet: it is attached
 to a Tetravox release, and the first release that carries it has not been cut. `package.json` depends

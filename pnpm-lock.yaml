@@ -15,8 +15,8 @@ importers:
         specifier: ^12.1.4
         version: 12.3.0(rollup@4.63.1)(tslib@2.8.1)(typescript@5.9.3)
       '@tetravox/module-sdk':
-        specifier: file:vendor/tetravox-module-sdk-1-0.2.0.tgz
-        version: file:vendor/tetravox-module-sdk-1-0.2.0.tgz(react@19.2.8)
+        specifier: file:vendor/tetravox-module-sdk-1-0.3.1.tgz
+        version: file:vendor/tetravox-module-sdk-1-0.3.1.tgz(react@19.2.8)
       '@types/node':
         specifier: ^26.4.0
         version: 26.4.0
@@ -325,9 +325,9 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@tetravox/module-sdk@file:vendor/tetravox-module-sdk-1-0.2.0.tgz':
-    resolution: {integrity: sha512-7b+vxbzqqFOFbtdsaqjMjqk/ZjFfaqh9UY7sAQ9Q6d2c2fbAyEikqUfQxzNS25yzAlztmaIEYLYlvNcJ0vm8nA==, tarball: file:vendor/tetravox-module-sdk-1-0.2.0.tgz}
-    version: 1.0.0-core.0.2.0
+  '@tetravox/module-sdk@file:vendor/tetravox-module-sdk-1-0.3.1.tgz':
+    resolution: {integrity: sha512-6J2j5V7xRpIYdjCpzAHPD4Jluh7XhGHqmdTrfhzADsgi/75+rf2UrTQXvdYS7CQdoZ913E8NgkTeYn2qM5ISZA==, tarball: file:vendor/tetravox-module-sdk-1-0.3.1.tgz}
+    version: 1.0.0-core.0.3.1
     peerDependencies:
       react: '>=19'
     peerDependenciesMeta:
@@ -862,7 +862,7 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@tetravox/module-sdk@file:vendor/tetravox-module-sdk-1-0.2.0.tgz(react@19.2.8)':
+  '@tetravox/module-sdk@file:vendor/tetravox-module-sdk-1-0.3.1.tgz(react@19.2.8)':
     optionalDependencies:
       react: 19.2.8
 

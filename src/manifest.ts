@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.1.2',
+  version: '0.1.3',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -159,4 +159,18 @@ export const seegManifest: ModuleManifest = {
     { id: 'delete', args: { contact: 'string' } },
   ],
   sceneBlock: { version: 1 },
+  /**
+   * §13.10, 2026-08-31. Pop-out is *allowed* rather than *preferred*: the panel's own feedback loop
+   * is the Info panel's Cursor block and the slice panes beside it, so the slot is still the right
+   * place to start, and a clinician localising one subject should not be handed a second window
+   * they did not ask for. It is offered because this is the module that most wants the room — a
+   * fifteen-shaft subject is ~200 contact rows behind a `max-h-[55%]` scroller, and on a second
+   * monitor the whole table can be open beside a full-height view grid.
+   *
+   * The size is the two-column layout's own threshold (560 px) with margin, and tall because the
+   * list is what benefits: the panel reflows on its *measured width* rather than on `placement`, so
+   * a user who narrows this window gets the docked layout back and nothing is conditioned on which
+   * surface it happens to be drawn on.
+   */
+  ui: { popout: 'allowed', windowWidth: 720, windowHeight: 900 },
 };

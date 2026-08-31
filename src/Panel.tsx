@@ -19,6 +19,9 @@
 import {
   createElement,
   react,
+  useEffect,
+  useRef,
+  useState,
   useSyncExternalStore,
 } from "@tetravox/module-sdk";
 import type { SeegModel, SeegRow } from "./editor";
@@ -36,6 +39,40 @@ const CHORDS: Record<string, string> = {
   undo: "z",
   redo: "⇧Z",
 };
+
+/**
+ * The width at which the panel splits into two columns.
+ *
+ * The docked slot is a 320 px column, so the panel is never wide there and never will be — the
+ * threshold is only ever crossed in a popped-out window (§13.10) or, one day, in a resizable aside.
+ * 560 px is where the controls stop wrapping into four rows: below it the two-column layout gives
+ * the list less room than it takes away from the buttons.
+ */
+const WIDE_PX = 560;
+
+/**
+ * The panel's own measured width.
+ *
+ * Deliberately **not** `host.ui.placement()`. Where the panel is drawn is not the question the
+ * layout has: a popped-out window the user has dragged narrow should get the docked layout back,
+ * and a resizable right aside — on the roadmap — would want the wide one without anything being
+ * popped out. Measuring answers both, and it degrades to the docked layout in any environment with
+ * no `ResizeObserver`.
+ */
+function useWide(ref: { current: HTMLElement | null }): boolean {
+  const [wide, setWide] = useState(false);
+  useEffect(() => {
+    const node = ref.current;
+    if (node === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setWide(width >= WIDE_PX);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return wide;
+}
 
 function blur(event: React.MouseEvent<HTMLElement>): void {
   event.currentTarget.blur();
@@ -146,6 +183,8 @@ function ContactRow({
 
 export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
   const view = useSyncExternalStore(model.subscribe, model.state, model.state);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const wide = useWide(rootRef);
 
   const command =
     (id: string) =>
@@ -166,7 +205,41 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
     "currentColor";
 
   return (
-    <div data-testid="seeg-panel" className="flex flex-col gap-1.5 text-[11px]">
+    <div
+      ref={rootRef}
+      data-testid="seeg-panel"
+      data-layout={wide ? "wide" : "narrow"}
+      className={wide ? "text-[11px]" : "flex flex-col gap-1.5 text-[11px]"}
+      /*
+        The wide layout is an **inline style**, not a utility class, for the reason the selected row
+        below already is: this panel ships as a downloadable bundle and Tailwind compiles only the
+        classes it finds in the *app's* sources, so an arbitrary-value class this file is the sole
+        user of (`grid-cols-[…]`) resolves to nothing in a packaged build. It silently did: the
+        panel reported `data-layout="wide"` and rendered one stacked column.
+      */
+      style={
+        wide
+          ? {
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 19rem) minmax(0, 1fr)",
+              gap: "0.75rem",
+              height: "100%",
+              minHeight: 0,
+            }
+          : undefined
+      }
+    >
+      {/*
+        Two columns when there is room, one when there is not — and the narrow case renders
+        `display: contents`, so the docked panel's box tree is exactly what it was before §13.10 and
+        no golden, no `max-h-[55%]` cap and no existing test moves. Wide, the controls take a fixed
+        column and the list takes the rest and scrolls on its own, which is the whole point: a
+        fifteen-shaft subject is ~200 rows, and in the slot they are behind one small scroller.
+      */}
+      <div
+        className={wide ? "flex flex-col gap-1.5" : "contents"}
+        style={wide ? { minWidth: 0 } : undefined}
+      >
       {/*
         The source line is also the Inputs step: the manifest's reader only claims a file whose
         basename says `electrodes` / `contacts` / `markups`, and a site exporting `DIXI_locs.csv`
@@ -496,7 +569,17 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         </svg>
       )}
 
-      <ul data-testid="seeg-list" className="flex flex-col gap-0.5">
+      </div>
+
+      <div
+        className={wide ? "flex flex-col gap-1.5" : "contents"}
+        style={wide ? { minWidth: 0, minHeight: 0 } : undefined}
+      >
+      <ul
+        data-testid="seeg-list"
+        className="flex flex-col gap-0.5"
+        style={wide ? { flex: "1 1 0%", minHeight: 0, overflowY: "auto" } : undefined}
+      >
         {view.rows.map((row) => (
           <ContactRow key={row.id} row={row} model={model} />
         ))}
@@ -550,6 +633,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           {view.dirty && "• "}
           {view.changed} changed
         </span>
+      </div>
       </div>
     </div>
   );
