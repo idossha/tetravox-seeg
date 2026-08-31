@@ -1,5 +1,7 @@
 # sEEG contacts — a Tetravox extension
 
+![The sEEG contact editor in Tetravox, editing subject P077 — coloured electrode shafts across the panes, labelled contacts on the head mesh, and the SEEG CONTACTS panel.](docs/seeg-extension-p077.png)
+
 `tetravox.seeg` is a contact editor for stereo-EEG depth electrodes, built as a downloadable
 [Tetravox](https://github.com/idossha/tetravox) module: open a registered CT and the BIDS
 `electrodes.tsv` that was localised on it, fix what the localiser got wrong, and write the table back
