@@ -3,21 +3,19 @@
 ![The sEEG contact editor in Tetravox, editing subject P077 — coloured electrode shafts across the panes, labelled contacts on the head mesh, and the SEEG CONTACTS panel.](docs/seeg-extension-p077.png)
 
 `tetravox.seeg` is a contact editor for stereo-EEG depth electrodes, built as a downloadable
-[Tetravox](https://github.com/idossha/tetravox) module: open a registered CT and the BIDS
+[Tetravox](https://github.com/idossha/tetravox) extension: open a registered CT and the BIDS
 `electrodes.tsv` that was localised on it, fix what the localiser got wrong, and write the table back
-— reversibly, with a backup and a provenance sidecar. It reproduces the 3D Slicer *SEEG Contact
-Editor* workflow (`seegprep`'s `slicer/SEEGContactEditor`) in Tetravox's own panes, and reads and
-writes the same files, so the two can be used on the same subject interchangeably.
+— reversibly, with a backup and a provenance sidecar.
 
 It ships as **one ESM file plus its manifest**. Tetravox downloads both, verifies each against its own
 sha256, asks you what it may do, and only then lets it run.
 
-| | |
-| --- | --- |
-| Module id | `tetravox.seeg` |
-| Host API | 1 |
-| Requires | Tetravox with downloadable extensions (File ▸ Extensions…) |
-| Licence | MIT |
+|           |                                                            |
+| --------- | ---------------------------------------------------------- |
+| Module id | `tetravox.seeg`                                            |
+| Host API  | 1                                                          |
+| Requires  | Tetravox with downloadable extensions (File ▸ Extensions…) |
+| Licence   | MIT                                                        |
 
 ---
 
@@ -25,7 +23,7 @@ sha256, asks you what it may do, and only then lets it run.
 
 ### Through Tetravox
 
-**File ▸ Extensions…**, find *sEEG contacts*, **Install**, then **Enable** and read the permission
+**File ▸ Extensions…**, find _sEEG contacts_, **Install**, then **Enable** and read the permission
 sheet. That is the whole of it: the download is verified against the catalogue's hashes, the manifest
 is validated before anything is registered, and nothing is executable until you have consented.
 
@@ -71,22 +69,14 @@ Restart Tetravox and enable it in **File ▸ Extensions…**. (`TETRAVOX_MODULE_
 
 ## Using it
 
-The **sEEG contacts** module is a contact editor for stereo-EEG depth electrodes: open a registered CT
-and the BIDS `electrodes.tsv` that was localised on it, fix what the localiser got wrong, and write the
-table back — reversibly, with a backup and a provenance sidecar. It reproduces the 3D Slicer *SEEG
-Contact Editor* workflow (`seegprep`'s `slicer/SEEGContactEditor`) in Tetravox's own panes, and reads
-and writes the same files, so the two can be used on the same subject interchangeably.
-
-Open it from the toolbar's module switcher (`▾`, right of the panes), or just open one of the files.
-
 ### Opening a subject
 
 Drop, or **Open…**, either of these and the module finds the other beside it:
 
-| File | Where |
-|---|---|
-| the registered CT | `derivatives/seegprep/sub-<id>/ct/sub-<id>_acq-bone_space-T1w_ct.nii.gz` |
-| the electrodes table | `derivatives/seegprep/sub-<id>/ieeg/sub-<id>_space-T1w_electrodes.tsv` |
+| File                 | Where                                                                    |
+| -------------------- | ------------------------------------------------------------------------ |
+| the registered CT    | `derivatives/seegprep/sub-<id>/ct/sub-<id>_acq-bone_space-T1w_ct.nii.gz` |
+| the electrodes table | `derivatives/seegprep/sub-<id>/ieeg/sub-<id>_space-T1w_electrodes.tsv`   |
 
 From the CT it also looks for the `_coordsystem.json`, an existing `_editlog.json`, and the subject's
 T1 at `derivatives/SimNIBS/sub-<id>/m2m_<id>/T1.nii.gz`. Nothing is searched for: the module knows those
@@ -103,12 +93,6 @@ digits off the contact name (`LHIP8` → `LHIP`); and truncates a ragged row rat
 A 3D Slicer `.fcsv` markups file works too, LPS coordinates and all. A missing required column is the one
 thing it refuses, and the message names the delimiter it detected and the columns it found.
 
-On load the CT is set the way the Slicer editor sets it — grey, fully opaque, and everything below
-**150 HU hidden**, so soft tissue drops away and bone and metal are what is left. Colormap, opacity and
-the intensity floor stay in the ordinary volume-layer editor on the left; the module sets them once and
-then leaves them to you. If a T1 is loaded above the CT in the layer list, raise the CT above it — the
-floor only reveals what is underneath.
-
 If an `_editlog.json` already sits beside the table, the panel shows a banner saying when it was
 hand-edited: somebody has been here before you.
 
@@ -122,27 +106,27 @@ glance which line belongs to which contact. Contacts that are not on the current
 
 Three switches decide how much of that is drawn, and none of them touches the table:
 
-| Switch | Does |
-|---|---|
-| **Ghost** (`g`) | draw the contacts that are not on this slice, faintly |
-| **Wire** (`d`) | draw the shaft lines. Off is for a figure about one slice's contacts |
-| **size − / +** | how big a contact is drawn, 2–12 px. The bigger dot is also a bigger click target |
+| Switch          | Does                                                                              |
+| --------------- | --------------------------------------------------------------------------------- |
+| **Ghost** (`g`) | draw the contacts that are not on this slice, faintly                             |
+| **Wire** (`d`)  | draw the shaft lines. Off is for a figure about one slice's contacts              |
+| **size − / +**  | how big a contact is drawn, 2–12 px. The bigger dot is also a bigger click target |
 
 All three are saved with the scene, so a figure reopens looking the way you left it, and all three are job-file
-operations (`ghost`, `wire`, `size`) — which of them are on is part of what a figure *is*.
+operations (`ghost`, `wire`, `size`) — which of them are on is part of what a figure _is_.
 
-| Do this | With |
-|---|---|
-| select a contact | click it in a pane — ghosts included — or click its row in the list |
-| move one | drag it in a 2D pane, once the slice is on it |
-| add contacts | **Add** (`a`) — then every click in a pane drops a new contact on the chosen electrode |
-| walk the electrode | `n` / `p`, or the list — the crosshair follows, so every pane slices through the contact |
-| snap to the metal | `s` for the selected contact, `⇧S` for the whole electrode, **Snap all…** for every one |
-| re-fit the shaft | `f` |
-| renumber from the tip | **Renumber tip-first** |
-| flip which end is the tip | `t` |
-| delete | `Delete` or `⌫` |
-| undo / redo | `z` / `⇧Z` |
+| Do this                   | With                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| select a contact          | click it in a pane — ghosts included — or click its row in the list                      |
+| move one                  | drag it in a 2D pane, once the slice is on it                                            |
+| add contacts              | **Add** (`a`) — then every click in a pane drops a new contact on the chosen electrode   |
+| walk the electrode        | `n` / `p`, or the list — the crosshair follows, so every pane slices through the contact |
+| snap to the metal         | `s` for the selected contact, `⇧S` for the whole electrode, **Snap all…** for every one  |
+| re-fit the shaft          | `f`                                                                                      |
+| renumber from the tip     | **Renumber tip-first**                                                                   |
+| flip which end is the tip | `t`                                                                                      |
+| delete                    | `Delete` or `⌫`                                                                          |
+| undo / redo               | `z` / `⇧Z`                                                                               |
 
 **Clicking a contact selects it**, and everything follows: the electrode dropdown switches to that
 contact's shaft, the crosshair moves onto it so every pane slices through it, and a ring is drawn round
@@ -151,7 +135,7 @@ click does, and `Esc` puts you back into selecting rather than turning the tool 
 on a contact still moves the crosshair, exactly as it does with no module open.
 
 **Clicking a ghosted contact jumps the slice to it.** A ghost is a contact that lives on another slice, so
-there is no sensible way to *drag* one — it would move in a plane it is not in. Clicking one therefore does
+there is no sensible way to _drag_ one — it would move in a plane it is not in. Clicking one therefore does
 the useful half instead: it selects that contact and takes the crosshair there, so every pane re-cuts through
 it. The contact you clicked is now on the slice, and a second click grabs it in the ordinary way. In practice
 you click the marker you can see, the view comes to it, and you drag from there — you never have to scroll
@@ -159,22 +143,22 @@ onto a contact first to be able to pick it.
 
 **Snap** moves a contact to the intensity-weighted peak of a small box around it — the metal it is
 inside — at the radius the panel's field sets (0.5–5 mm, 1.5 mm by default). A contact with nothing
-bright near it does not move and is not counted. *Snap all* asks first, because it touches every
+bright near it does not move and is not counted. _Snap all_ asks first, because it touches every
 electrode at once; one snap of any scope is a single undo step.
 
 **Re-fit shaft** fits a line through the electrode's contacts, projects them onto it, re-spaces them
-evenly at the *median* observed gap — median, so one missing contact does not stretch the rest — and
+evenly at the _median_ observed gap — median, so one missing contact does not stretch the rest — and
 relabels them from the tip. It reports the line RMS and the spacing CV, which are the two numbers that
 say whether the shaft is straight and evenly spaced.
 
 **Numbering only ever changes when you ask.** Loading, placing, dragging, snapping and deleting all leave
 every contact's number and name exactly as they were — a clinical table's numbering is wired to the
 recording system through its `csc` column, and nothing should renumber it behind your back. Only
-*Re-fit* and *Renumber tip-first* relabel, and both say so on the button. New names keep the zero-padding
+_Re-fit_ and _Renumber tip-first_ relabel, and both say so on the button. New names keep the zero-padding
 the file used (`LINS01`, not `LINS1`).
 
-**Which end is the tip** is a heuristic, and the panel shows the answer: *contact 1 is the end of the
-shaft nearer the centre of the volume*, and the other end is the entry. That is right for nearly every
+**Which end is the tip** is a heuristic, and the panel shows the answer: _contact 1 is the end of the
+shaft nearer the centre of the volume_, and the other end is the entry. That is right for nearly every
 depth electrode and wrong for some — a shaft entering near the midline can defeat it — so the tip
 contact is marked in the list and `t` flips it. A flip is remembered per electrode and saved with the
 scene.
@@ -223,8 +207,6 @@ Every button is also a job-file operation, so a batch can do what the panel does
 than it looks: which end of a shaft is contact 1 comes from a heuristic, `renumber` applies whatever the
 tip currently is, and this is how a batch corrects the shaft the heuristic read backwards — the same thing
 `t` does in the panel. See [Automation](https://idossha.github.io/tetravox/AUTOMATION.html).
-
-
 
 ---
 
