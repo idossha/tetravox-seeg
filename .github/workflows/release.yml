@@ -1,0 +1,55 @@
+# A tagged release: verify, then attach the two assets under their own sha256 and print the fragments
+# the Tetravox repository and the extensions registry paste in.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The existing tag to (re)publish assets for
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/fetch-contacts.mjs
+
+      # The same gate CI runs. A release is not a second, laxer path to the same artefact.
+      - run: pnpm run verify
+
+      - name: Publish the assets, content-addressed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/publish-release.sh "${{ inputs.tag || github.ref_name }}" --upload
+
+      # The fragments are what a human pastes into `idossha/tetravox`'s `modules.lock` and
+      # `idossha/tetravox-extensions`'s `index.json`. Putting them in the job summary is what makes
+      # that a copy rather than a retyping.
+      - name: Print the modules.lock and registry fragments
+        run: |
+          {
+            echo '## Paste these'
+            echo '```json'
+            node scripts/print-fragments.mjs "${{ inputs.tag || github.ref_name }}" "${{ github.repository }}" \
+              "index.js $(wc -c < dist/index.js) $(sha256sum dist/index.js | cut -d' ' -f1)" \
+              "manifest.json $(wc -c < dist/manifest.json) $(sha256sum dist/manifest.json | cut -d' ' -f1)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
