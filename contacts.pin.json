@@ -1,0 +1,16 @@
+{
+  "$comment": "The shared contacts kit the tests execute. It is Tetravox's, not this repository's — a module's second module is a library, not a fork — and the app hands its own instance to a loaded module through `sdk.contacts`. The SDK tarball carries the kit's declarations so this repository can typecheck against it, but no runtime, so the *tests* fetch the pinned sources and verify every byte. Refresh `commit` and the hashes whenever the SDK is re-pinned; `scripts/fetch-contacts.mjs` is what reads this.",
+  "schema": 1,
+  "repo": "idossha/tetravox",
+  "commit": "53072d7e26d7ad68a113bf846092bb0c2a41c78a",
+  "path": "packages/app/src/renderer/src/modules/shared/contacts",
+  "files": {
+    "editlog.ts": "e3ddbbb14b739066cd8446cebb1120dfa2e5543b429e87d0b7ad1030eff48241",
+    "geometry.ts": "da61b89466b4192f1c7eff332a4913bf80d2cd69c770f250c97c478ad27b871b",
+    "layer.ts": "174127c1d72c73581315948be9c9d7ac976b65b5d63f5b706bedf497f8b69a8e",
+    "model.ts": "1f57dea74ecd01f10079b4e9592e2ff0f85f966c2fc9190f9bffc9ab64d73989",
+    "palette.ts": "b8096c3c2da12a5e6a49105db92eb3dead83f2f8324e5cc5131054bea071830c",
+    "snap.ts": "77ffcf354e1dbbeee3ea4478732c49eeefc0f1e2030992bfb6da49b82df1afc4",
+    "tsv.ts": "53366421c5e4ad894b505fd15165f80230c24d8d7347c43a4cb82283c87d10c8"
+  }
+}
