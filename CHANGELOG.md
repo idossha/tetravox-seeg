@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3 — 2026-08-31
+
+- The editor can be **popped out into its own window** (Tetravox core §13.10, the release after
+  0.3.1): the ⧉ in the slot header, or the switcher's own ⧉, moves the panel to a window of its own
+  and closing that window brings it back. Nothing is unloaded by the move — the same editor, the same
+  undo history, the same unsaved edits — and with the editor in a window a second module can hold the
+  slot at the same time.
+- **The panel reflows to two columns when it has the room**: the controls take a fixed column and the
+  contact list becomes a full-height scroller beside them, which is what a fifteen-shaft subject's
+  ~200 rows want and what the 320 px slot cannot give. The trigger is the panel's own *measured*
+  width (560 px), not where it is drawn, so narrowing the window gives the one-column layout back and
+  a future resizable aside gets the wide one without a pop-out.
+- The manifest asks for a 720 × 900 window and declares `popout: 'allowed'` — not `'preferred'`: the
+  editor's feedback loop is the Info panel's Cursor block beside the panes, so the slot stays the
+  right place to start.
+
 ## 0.1.2 — 2026-08-31
 
 - The selected contact is now visible in the panel: its row carries the theme's accent surface with an

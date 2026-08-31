@@ -62,4 +62,20 @@ describe('the manifest', () => {
       }
     }
   });
+
+  it('asks to be poppable, and asks for a window its own wide layout fits in (§13.10)', () => {
+    // The size is not decoration: the panel splits into two columns at 560 px of *measured* width,
+    // so a window narrower than that would open in the docked layout and the module would have
+    // asked for a second window that changed nothing.
+    expect(seegManifest.ui?.popout).toBe('allowed');
+    expect(seegManifest.ui?.windowWidth ?? 0).toBeGreaterThanOrEqual(560);
+    expect(seegManifest.ui?.windowHeight ?? 0).toBeGreaterThanOrEqual(600);
+  });
+
+  it('does not ask for a window it would be given by default', () => {
+    // `'preferred'` would open this in its own window the first time it is loaded — wrong for the
+    // module whose feedback loop is the Info panel's Cursor block right beside the slot.
+    expect(seegManifest.ui?.popout).not.toBe('preferred');
+  });
+
 });
