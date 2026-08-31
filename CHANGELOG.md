@@ -6,7 +6,7 @@
   accent rule down its left edge and its name in accent, and the shaft sketch draws a halo around the
   matching dot. Selecting in a pane, in the list or with `n` / `p` moves both marks together, so the
   sketch, the list and the panes always point at the same contact.
-- The slot header the panel lives in grew a fold arrow beside its ✕ (Tetravox core, from 0.3.1): it
+- The slot header the panel lives in grew a fold arrow beside its ✕ (Tetravox core, the release after 0.3.1): it
   hides the panel body while the module stays active — no unloading, no reloading of the table.
 
 ## 0.1.1 — 2026-08-31
