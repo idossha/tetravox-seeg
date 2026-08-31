@@ -17,11 +17,13 @@ import {
   refitShaft,
   renumberTipFirst,
   resolveTip,
+  shaftDiagram,
   shaftStats,
   tipEnd,
   tipFirstOrder,
   tipReference,
 } from '../src/shaft';
+import type { ShaftDiagram } from '../src/shaft';
 
 const { contactsOf, paletteColor } = contacts;
 
@@ -241,5 +243,64 @@ describe.skipIf(!HAS_CONTACTS)('tipFirstOrder', () => {
     const contacts = shaft('A', [0, 0, 0], [1, 0, 0], 2, 3);
     expect(tipFirstOrder(contacts, 'low').map((c) => c.name)).toEqual(['A01', 'A02', 'A03']);
     expect(tipFirstOrder(contacts, 'high').map((c) => c.name)).toEqual(['A03', 'A02', 'A01']);
+  });
+});
+
+describe.skipIf(!HAS_CONTACTS)('shaftDiagram — never a non-finite SVG coordinate', () => {
+  /** Every number the panel writes into an `<svg>`: the baseline's ends and every dot's centre. */
+  const coordinates = (diagram: ShaftDiagram): number[] => [
+    diagram.line.x1,
+    diagram.line.y1,
+    diagram.line.x2,
+    diagram.line.y2,
+    ...diagram.dots.flatMap((dot) => [dot.cx, dot.cy]),
+  ];
+
+  it('spreads a normal multi-contact shaft along the baseline, in order', () => {
+    const positions = shaft('L', [-60, 0, 0], [1, 0, 0], 3.5, 8).map((c) => c.position);
+    const diagram = shaftDiagram(positions);
+    expect(diagram).not.toBeNull();
+    const drawn = diagram as ShaftDiagram;
+
+    expect(coordinates(drawn).every((v) => Number.isFinite(v))).toBe(true);
+    expect(drawn.dots).toHaveLength(8);
+    // The dots march monotonically to the right, and the baseline runs from the first to the last.
+    const xs = drawn.dots.map((dot) => dot.cx);
+    for (let i = 1; i < xs.length; i += 1) {
+      expect(xs[i] as number).toBeGreaterThan(xs[i - 1] as number);
+    }
+    expect(drawn.line.x1).toBeCloseTo(xs[0] as number, 9);
+    expect(drawn.line.x2).toBeCloseTo(xs[xs.length - 1] as number, 9);
+  });
+
+  it('keeps every coordinate finite for a one-contact electrode (P077 had these)', () => {
+    // A single contact: `fitLine` returns null, so there is no line to project onto. The span-based
+    // normalisation would divide by a zero range; the guard puts the one dot at the midpoint.
+    const one = shaft('S', [12, -4, 30], [1, 0, 0], 3.5, 1).map((c) => c.position);
+    const diagram = shaftDiagram(one);
+    expect(diagram).not.toBeNull();
+    const drawn = diagram as ShaftDiagram;
+    expect(coordinates(drawn).every((v) => Number.isFinite(v))).toBe(true);
+    expect(drawn.dots).toHaveLength(1);
+  });
+
+  it('keeps every coordinate finite when every contact projects to one point', () => {
+    // A degenerate export: several rows carrying the identical coordinate. The fit spans nothing, so
+    // the natural `(t - min) / (max - min)` is `0 / 0`. This is the case that logged `Infinity` on
+    // `<line>` x1/x2 for P077's fifteen shafts.
+    const stacked: vec3[] = Array.from({ length: 5 }, () => [7, 7, 7]);
+    const diagram = shaftDiagram(stacked);
+    expect(diagram).not.toBeNull();
+    const drawn = diagram as ShaftDiagram;
+    expect(coordinates(drawn).every((v) => Number.isFinite(v))).toBe(true);
+    expect(drawn.dots).toHaveLength(5);
+  });
+
+  it('marks the tip dot and no other, and draws nothing for an empty electrode', () => {
+    const positions = shaft('L', [-60, 0, 0], [1, 0, 0], 3.5, 6).map((c) => c.position);
+    const drawn = shaftDiagram(positions, 0) as ShaftDiagram;
+    expect(drawn.dots.filter((dot) => dot.tip)).toHaveLength(1);
+    expect(drawn.dots[0]?.tip).toBe(true);
+    expect(shaftDiagram([])).toBeNull();
   });
 });

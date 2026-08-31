@@ -42,13 +42,14 @@ import type {
   VolumeLayer,
   vec3,
 } from '@tetravox/module-sdk';
-import type { ShaftStats } from './shaft';
+import type { ShaftDiagram, ShaftStats } from './shaft';
 import {
   allShaftStats,
   flippedTip,
   refitShaft,
   renumberTipFirst,
   resolveTip,
+  shaftDiagram,
   shaftStats,
   tipFirstOrder,
   tipReference,
@@ -152,6 +153,8 @@ export interface SeegView {
   placing: boolean;
   stats: ShaftStats | null;
   tipName: string | null;
+  /** The selected electrode's shaft sketch, or `null` when nothing is selected. */
+  diagram: ShaftDiagram | null;
   rows: SeegRow[];
   selectedId: string | null;
   dirty: boolean;
@@ -719,6 +722,13 @@ export function createModel(host: ModuleHost): SeegModel {
       placing,
       stats: electrode === null ? null : shaftStats(set, electrode),
       tipName: rows.find((r) => r.tip)?.name ?? null,
+      diagram:
+        electrode === null
+          ? null
+          : shaftDiagram(
+              contactsOf(set, electrode).map((c) => c.position),
+              rows.findIndex((r) => r.tip)
+            ),
       rows,
       selectedId,
       dirty: isDirty,

@@ -128,6 +128,87 @@ export function allShaftStats(set: ContactSet): ShaftStats[] {
   return set.groups.map((group) => shaftStats(set, group.name));
 }
 
+/** The panel's small shaft sketch: a baseline with one dot per contact, in draw order. */
+export interface ShaftDiagram {
+  width: number;
+  height: number;
+  /** The shaft baseline, from the first dot to the last. */
+  line: { x1: number; y1: number; x2: number; y2: number };
+  /** One dot per contact, in the set's order; `tip` marks contact 1. */
+  dots: { cx: number; cy: number; tip: boolean }[];
+}
+
+/** The viewBox the panel draws the sketch in. Pure numbers, so the helper stays testable. */
+export interface ShaftDiagramLayout {
+  width: number;
+  height: number;
+  /** Horizontal padding, so the two end dots are not clipped by the box. */
+  padX: number;
+}
+
+const DIAGRAM_LAYOUT: ShaftDiagramLayout = { width: 200, height: 24, padX: 10 };
+
+/** A projected span narrower than this is no span at all, in the fit's units (millimetres). */
+const DIAGRAM_SPAN_EPS = 1e-9;
+
+/**
+ * Lay one electrode's contacts out along a horizontal baseline for the panel's sketch.
+ *
+ * Each dot sits at its own fraction along the shaft — its projection onto the fitted line,
+ * normalised across the shaft's span. **The span is the trap.** A one-contact electrode, or one
+ * whose contacts all project to a single point (every position identical, which real exports — the
+ * owner's P077 among them — do contain), has a span of zero, and the natural `(t − min) / span` is
+ * then `0 / 0 = NaN`, or `k / 0 = ±Infinity` for any contact off the minimum. Fed to an SVG `x1` /
+ * `x2` / `cx` that logs `<line> attribute x1: Expected length, "Infinity"` on every render —
+ * cosmetic, but it spams the console. So when there is no span to normalise against, the dots fall
+ * back to an even spread by index, which is always finite and reads correctly for the one-contact
+ * case: a single dot at the midpoint.
+ *
+ * `null` only for an electrode with no contacts — there is nothing to draw.
+ */
+export function shaftDiagram(
+  positions: readonly vec3[],
+  tipIndex: number | null = null,
+  layout: ShaftDiagramLayout = DIAGRAM_LAYOUT
+): ShaftDiagram | null {
+  const n = positions.length;
+  if (n === 0) return null;
+
+  const { width, height, padX } = layout;
+  const y = height / 2;
+  const drawWidth = width - 2 * padX;
+
+  // The along-shaft fraction of each contact, guaranteed finite. `fitLine` is `null` for a single
+  // contact (nothing to project onto); an identical-position set fits but spans nothing.
+  const fit = fitLine(positions);
+  let fracs: number[];
+  if (fit === null) {
+    fracs = positions.map(() => 0.5);
+  } else {
+    const t = fit.t;
+    const min = Math.min(...t);
+    const max = Math.max(...t);
+    const span = max - min;
+    fracs =
+      span > DIAGRAM_SPAN_EPS
+        ? t.map((value) => (value - min) / span)
+        : positions.map((_position, index) => (n === 1 ? 0.5 : index / (n - 1)));
+  }
+
+  const dots = fracs.map((frac, index) => ({
+    cx: padX + frac * drawWidth,
+    cy: y,
+    tip: index === tipIndex,
+  }));
+  const xs = dots.map((dot) => dot.cx);
+  return {
+    width,
+    height,
+    line: { x1: Math.min(...xs), y1: y, x2: Math.max(...xs), y2: y },
+    dots,
+  };
+}
+
 /** Replace the named contacts inside a set, keeping the array's (drawing) order. */
 function withContacts(set: ContactSet, replaced: readonly Contact[]): ContactSet {
   const byId = new Map(replaced.map((c) => [c.id, c]));

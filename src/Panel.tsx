@@ -122,6 +122,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
     return chord === undefined ? text : `${text} (${chord})`;
   };
 
+  // The sketch is drawn in the electrode's own colour — the same one the swatch shows — so it reads
+  // as this shaft and not a generic diagram. `currentColor` is the fallback for a set with no colour.
+  const shaftColor =
+    view.electrodes.find((e) => e.name === view.electrode)?.color ?? 'currentColor';
+
   return (
     <div data-testid="seeg-panel" className="flex flex-col gap-1.5 text-[11px]">
       {/*
@@ -366,6 +371,43 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           </>
         )}
       </p>
+
+      {/*
+        The shaft sketch: the selected electrode as a baseline with one dot per contact, contact 1
+        (the tip) drawn larger. The geometry is the model's — `shaftDiagram` in `shaft.ts` — and it
+        is guarded so a one-contact electrode or an all-identical-position export never yields a
+        non-finite coordinate; a bare `(t − min) / span` would feed the SVG an `Infinity` there and
+        the browser would log it on every render.
+      */}
+      {view.diagram !== null && (
+        <svg
+          data-testid="seeg-diagram"
+          className="h-5 w-full"
+          viewBox={`0 0 ${view.diagram.width} ${view.diagram.height}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="the selected electrode, drawn as a shaft"
+        >
+          <line
+            x1={view.diagram.line.x1}
+            y1={view.diagram.line.y1}
+            x2={view.diagram.line.x2}
+            y2={view.diagram.line.y2}
+            stroke={shaftColor}
+            strokeWidth={1}
+            strokeOpacity={0.5}
+          />
+          {view.diagram.dots.map((dot, index) => (
+            <circle
+              key={index}
+              cx={dot.cx}
+              cy={dot.cy}
+              r={dot.tip ? 3 : 2}
+              fill={shaftColor}
+            />
+          ))}
+        </svg>
+      )}
 
       <ul data-testid="seeg-list" className="flex flex-col gap-0.5">
         {view.rows.map((row) => (
