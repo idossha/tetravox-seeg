@@ -727,7 +727,8 @@ export function createModel(host: ModuleHost): SeegModel {
           ? null
           : shaftDiagram(
               contactsOf(set, electrode).map((c) => c.position),
-              rows.findIndex((r) => r.tip)
+              rows.findIndex((r) => r.tip),
+              rows.findIndex((r) => r.selected)
             ),
       rows,
       selectedId,

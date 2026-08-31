@@ -16,21 +16,25 @@
  * (`input/pointer.ts`). Every control here does it, including the ones in the list.
  */
 
-import { createElement, react, useSyncExternalStore } from '@tetravox/module-sdk';
-import type { SeegModel, SeegRow } from './editor';
+import {
+  createElement,
+  react,
+  useSyncExternalStore,
+} from "@tetravox/module-sdk";
+import type { SeegModel, SeegRow } from "./editor";
 
 const CHORDS: Record<string, string> = {
-  add: 'a',
-  snap: 's',
-  'snap-electrode': '⇧S',
-  refit: 'f',
-  'flip-tip': 't',
-  ghost: 'g',
-  wire: 'd',
-  next: 'n',
-  prev: 'p',
-  undo: 'z',
-  redo: '⇧Z',
+  add: "a",
+  snap: "s",
+  "snap-electrode": "⇧S",
+  refit: "f",
+  "flip-tip": "t",
+  ghost: "g",
+  wire: "d",
+  next: "n",
+  prev: "p",
+  undo: "z",
+  redo: "⇧Z",
 };
 
 function blur(event: React.MouseEvent<HTMLElement>): void {
@@ -38,38 +42,71 @@ function blur(event: React.MouseEvent<HTMLElement>): void {
 }
 
 function millimetres(value: number | null): string {
-  return value === null ? '—' : `${value.toFixed(1)} mm`;
+  return value === null ? "—" : `${value.toFixed(1)} mm`;
 }
 
 function ratio(value: number | null): string {
-  return value === null ? '—' : `${(value * 100).toFixed(0)} %`;
+  return value === null ? "—" : `${(value * 100).toFixed(0)} %`;
 }
 
 function StatusChip({ status }: { status: string }): React.JSX.Element {
   const tone =
-    status === 'added' ? 'text-tvx-accent' : status === 'edited' ? 'text-tvx-warn' : 'text-tvx-dim';
+    status === "added"
+      ? "text-tvx-accent"
+      : status === "edited"
+        ? "text-tvx-warn"
+        : "text-tvx-dim";
   return <span className={`w-12 shrink-0 truncate ${tone}`}>{status}</span>;
 }
 
-function ContactRow({ row, model }: { row: SeegRow; model: SeegModel }): React.JSX.Element {
+function ContactRow({
+  row,
+  model,
+}: {
+  row: SeegRow;
+  model: SeegModel;
+}): React.JSX.Element {
   return (
     <li
       data-testid={`seeg-row-${row.name}`}
       data-selected={row.selected}
       data-status={row.status}
-      className={`flex items-center gap-1 text-[11px] ${row.selected ? 'text-tvx-text' : ''}`}
+      className={`flex items-center gap-1 text-[11px] ${row.selected ? "text-tvx-text" : ""}`}
+      /*
+        The selected row is marked with an inline style, not a utility class: the panel ships as a
+        downloadable bundle and Tailwind only compiles the classes it finds in the *app's* sources,
+        so a class this file is the sole user of would resolve to nothing in a packaged build. The
+        two theme variables are the app's own, so it re-themes with everything else.
+      */
+      style={
+        row.selected
+          ? {
+              backgroundColor: "var(--color-tvx-accent-surface)",
+              boxShadow: "inset 2px 0 0 0 var(--color-tvx-accent)",
+              borderRadius: "2px",
+            }
+          : undefined
+      }
     >
       <button
         type="button"
         data-testid={`seeg-select-${row.name}`}
-        className="w-16 shrink-0 truncate text-left tabular-nums hover:text-tvx-accent"
-        title={row.tip ? `${row.name} — this electrode is numbered from here` : row.name}
+        className={`w-16 shrink-0 truncate text-left tabular-nums hover:text-tvx-accent ${
+          row.selected ? "font-semibold text-tvx-accent-strong" : ""
+        }`}
+        title={
+          row.selected
+            ? `${row.name} — the selected contact`
+            : row.tip
+              ? `${row.name} — this electrode is numbered from here`
+              : row.name
+        }
         onClick={(event) => {
           blur(event);
           model.jumpTo(row.id);
         }}
       >
-        {row.tip ? '▸' : ' '}
+        {row.tip ? "▸" : " "}
         {row.name}
       </button>
       <StatusChip status={row.status} />
@@ -125,7 +162,8 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
   // The sketch is drawn in the electrode's own colour — the same one the swatch shows — so it reads
   // as this shaft and not a generic diagram. `currentColor` is the fallback for a set with no colour.
   const shaftColor =
-    view.electrodes.find((e) => e.name === view.electrode)?.color ?? 'currentColor';
+    view.electrodes.find((e) => e.name === view.electrode)?.color ??
+    "currentColor";
 
   return (
     <div data-testid="seeg-panel" className="flex flex-col gap-1.5 text-[11px]">
@@ -143,11 +181,13 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           title="the files this is editing"
         >
           {view.ctName === null && view.tsvName === null ? (
-            'Open a CT and its electrodes table.'
+            "Open a CT and its electrodes table."
           ) : (
             <>
-              {view.subject !== null && <span className="text-tvx-text">{view.subject} · </span>}
-              {view.ctName ?? 'no CT'} · {view.tsvName ?? 'no table'}
+              {view.subject !== null && (
+                <span className="text-tvx-text">{view.subject} · </span>
+              )}
+              {view.ctName ?? "no CT"} · {view.tsvName ?? "no table"}
             </>
           )}
         </p>
@@ -156,7 +196,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-open"
           className="tvx-btn tvx-btn-sm shrink-0"
           title="Open an electrodes table this module did not claim by name"
-          onClick={command('load')}
+          onClick={command("load")}
         >
           Open…
         </button>
@@ -182,11 +222,13 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         <select
           data-testid="seeg-electrode"
           className="tvx-input min-w-0 flex-1"
-          value={view.electrode ?? ''}
+          value={view.electrode ?? ""}
           disabled={view.electrodes.length === 0}
           onChange={(event) => model.setElectrode(event.target.value)}
         >
-          {view.electrodes.length === 0 && <option value="">no electrodes</option>}
+          {view.electrodes.length === 0 && (
+            <option value="">no electrodes</option>
+          )}
           {view.electrodes.map((option) => (
             <option key={option.name} value={option.name}>
               {option.name} ({option.count})
@@ -198,10 +240,14 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           className="h-3 w-3 shrink-0 rounded-sm border border-tvx-line"
           style={{
             backgroundColor:
-              view.electrodes.find((e) => e.name === view.electrode)?.color ?? 'transparent',
+              view.electrodes.find((e) => e.name === view.electrode)?.color ??
+              "transparent",
           }}
         />
-        <label className="flex shrink-0 items-center gap-1 text-tvx-dim" title="snap radius">
+        <label
+          className="flex shrink-0 items-center gap-1 text-tvx-dim"
+          title="snap radius"
+        >
           r
           <input
             data-testid="seeg-radius"
@@ -211,7 +257,9 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
             max={5}
             step={0.25}
             value={view.snapRadiusMm}
-            onChange={(event) => model.setSnapRadius(Number(event.target.value))}
+            onChange={(event) =>
+              model.setSnapRadius(Number(event.target.value))
+            }
           />
         </label>
       </div>
@@ -221,9 +269,12 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-add"
           aria-pressed={view.placing}
-          className={`tvx-btn ${view.placing ? 'tvx-btn-on' : ''}`}
-          title={label('add', 'Every click in a pane drops a contact on this electrode')}
-          onClick={command('add')}
+          className={`tvx-btn ${view.placing ? "tvx-btn-on" : ""}`}
+          title={label(
+            "add",
+            "Every click in a pane drops a contact on this electrode",
+          )}
+          onClick={command("add")}
         >
           Add
         </button>
@@ -232,8 +283,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-snap"
           className="tvx-btn"
           disabled={view.selectedId === null}
-          title={label('snap', 'Snap the selected contact to the local CT peak')}
-          onClick={command('snap')}
+          title={label(
+            "snap",
+            "Snap the selected contact to the local CT peak",
+          )}
+          onClick={command("snap")}
         >
           Snap
         </button>
@@ -241,8 +295,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-snap-electrode"
           className="tvx-btn"
-          title={label('snap-electrode', 'Snap every contact of this electrode')}
-          onClick={command('snap-electrode')}
+          title={label(
+            "snap-electrode",
+            "Snap every contact of this electrode",
+          )}
+          onClick={command("snap-electrode")}
         >
           Snap elec
         </button>
@@ -251,7 +308,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-snap-all"
           className="tvx-btn"
           title="Snap every contact of every electrode (asks first)"
-          onClick={command('snap-all')}
+          onClick={command("snap-all")}
         >
           Snap all…
         </button>
@@ -262,8 +319,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-refit"
           className="tvx-btn"
-          title={label('refit', 'Fit a line, re-space evenly at the median gap, relabel tip-first')}
-          onClick={command('refit')}
+          title={label(
+            "refit",
+            "Fit a line, re-space evenly at the median gap, relabel tip-first",
+          )}
+          onClick={command("refit")}
         >
           Re-fit
         </button>
@@ -272,7 +332,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-renumber"
           className="tvx-btn"
           title="Number this electrode 1…n from the tip, without moving anything"
-          onClick={command('renumber')}
+          onClick={command("renumber")}
         >
           Renumber
         </button>
@@ -280,8 +340,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-flip-tip"
           className="tvx-btn"
-          title={label('flip-tip', 'Use the other end of this electrode as contact 1')}
-          onClick={command('flip-tip')}
+          title={label(
+            "flip-tip",
+            "Use the other end of this electrode as contact 1",
+          )}
+          onClick={command("flip-tip")}
         >
           Flip tip
         </button>
@@ -289,9 +352,12 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-ghost"
           aria-pressed={view.ghost}
-          className={`tvx-btn ${view.ghost ? 'tvx-btn-on' : ''}`}
-          title={label('ghost', 'Draw off-slice contacts, so a shaft reads as a shaft')}
-          onClick={command('ghost')}
+          className={`tvx-btn ${view.ghost ? "tvx-btn-on" : ""}`}
+          title={label(
+            "ghost",
+            "Draw off-slice contacts, so a shaft reads as a shaft",
+          )}
+          onClick={command("ghost")}
         >
           Ghost
         </button>
@@ -299,9 +365,12 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-wire"
           aria-pressed={view.wire}
-          className={`tvx-btn ${view.wire ? 'tvx-btn-on' : ''}`}
-          title={label('wire', 'Draw the shaft line between consecutive contacts')}
-          onClick={command('wire')}
+          className={`tvx-btn ${view.wire ? "tvx-btn-on" : ""}`}
+          title={label(
+            "wire",
+            "Draw the shaft line between consecutive contacts",
+          )}
+          onClick={command("wire")}
         >
           Wire
         </button>
@@ -310,7 +379,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-revert"
           className="tvx-btn"
           title="Put every contact back where the table had it"
-          onClick={command('revert')}
+          onClick={command("revert")}
         >
           Revert
         </button>
@@ -336,7 +405,10 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           >
             −
           </button>
-          <span data-testid="seeg-size" className="w-4 text-center tabular-nums text-tvx-text">
+          <span
+            data-testid="seeg-size"
+            className="w-4 text-center tabular-nums text-tvx-text"
+          >
             {view.dotRadiusPx}
           </span>
           <button
@@ -357,14 +429,15 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
 
       <p data-testid="seeg-stats" className="tabular-nums text-tvx-dim">
         {view.stats === null ? (
-          'no electrode selected'
+          "no electrode selected"
         ) : (
           <>
-            rms {millimetres(view.stats.rmsMm)} · spacing cv {ratio(view.stats.spacingCv)} · pitch{' '}
+            rms {millimetres(view.stats.rmsMm)} · spacing cv{" "}
+            {ratio(view.stats.spacingCv)} · pitch{" "}
             {millimetres(view.stats.pitchMm)}
             {view.tipName !== null && (
               <>
-                {' '}
+                {" "}
                 · tip <span data-testid="seeg-tip">{view.tipName}</span>
               </>
             )}
@@ -398,13 +471,27 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
             strokeOpacity={0.5}
           />
           {view.diagram.dots.map((dot, index) => (
-            <circle
-              key={index}
-              cx={dot.cx}
-              cy={dot.cy}
-              r={dot.tip ? 3 : 2}
-              fill={shaftColor}
-            />
+            <g key={index}>
+              {/* The selected contact gets a halo in the theme's accent, so the sketch, the list
+                  and the panes all point at the same dot. */}
+              {dot.selected && (
+                <circle
+                  data-testid="seeg-diagram-selected"
+                  cx={dot.cx}
+                  cy={dot.cy}
+                  r={dot.tip ? 6 : 5}
+                  fill="none"
+                  stroke="var(--color-tvx-accent)"
+                  strokeWidth={1.5}
+                />
+              )}
+              <circle
+                cx={dot.cx}
+                cy={dot.cy}
+                r={dot.tip ? 3 : 2}
+                fill={shaftColor}
+              />
+            </g>
           ))}
         </svg>
       )}
@@ -421,8 +508,8 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-undo"
           className="tvx-btn"
           disabled={!view.canUndo}
-          title={label('undo', 'Undo the last edit')}
-          onClick={command('undo')}
+          title={label("undo", "Undo the last edit")}
+          onClick={command("undo")}
         >
           Undo
         </button>
@@ -431,8 +518,8 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-redo"
           className="tvx-btn"
           disabled={!view.canRedo}
-          title={label('redo', 'Redo')}
-          onClick={command('redo')}
+          title={label("redo", "Redo")}
+          onClick={command("redo")}
         >
           Redo
         </button>
@@ -442,7 +529,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           className="tvx-btn"
           disabled={view.busy}
           title="Write the table, its backup and its editlog"
-          onClick={command('save')}
+          onClick={command("save")}
         >
           Save
         </button>
@@ -452,12 +539,15 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           className="tvx-btn"
           disabled={view.busy}
           title="Choose where to write the table"
-          onClick={command('save-as')}
+          onClick={command("save-as")}
         >
           Save as…
         </button>
-        <span data-testid="seeg-changed" className="ml-auto tabular-nums text-tvx-dim">
-          {view.dirty && '• '}
+        <span
+          data-testid="seeg-changed"
+          className="ml-auto tabular-nums text-tvx-dim"
+        >
+          {view.dirty && "• "}
           {view.changed} changed
         </span>
       </div>

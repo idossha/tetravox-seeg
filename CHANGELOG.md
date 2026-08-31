@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 — 2026-08-31
+
+- The selected contact is now visible in the panel: its row carries the theme's accent surface with an
+  accent rule down its left edge and its name in accent, and the shaft sketch draws a halo around the
+  matching dot. Selecting in a pane, in the list or with `n` / `p` moves both marks together, so the
+  sketch, the list and the panes always point at the same contact.
+- The slot header the panel lives in grew a fold arrow beside its ✕ (Tetravox core, from 0.3.1): it
+  hides the panel body while the module stays active — no unloading, no reloading of the table.
+
 ## 0.1.1 — 2026-08-31
 
 - The panel now draws the selected electrode as a small shaft sketch — a baseline with one dot per

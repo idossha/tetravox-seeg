@@ -35,8 +35,14 @@
  * current one.
  */
 
-import { contacts } from '@tetravox/module-sdk';
-import type { Contact, ContactSet, Group, TipEnd, vec3 } from '@tetravox/module-sdk';
+import { contacts } from "@tetravox/module-sdk";
+import type {
+  Contact,
+  ContactSet,
+  Group,
+  TipEnd,
+  vec3,
+} from "@tetravox/module-sdk";
 
 const {
   centroidOf,
@@ -52,30 +58,37 @@ const {
 const TIP_TIE_MM = 1e-6;
 
 /** Which end of the fitted line is the tip, by the heuristic above. `'low'` on a tie or no fit. */
-export function tipEnd(positions: readonly vec3[], reference: vec3): 'low' | 'high' {
+export function tipEnd(
+  positions: readonly vec3[],
+  reference: vec3,
+): "low" | "high" {
   const fit = fitLine(positions);
-  if (fit === null) return 'low';
+  if (fit === null) return "low";
   const order = orderAlong(positions);
   const low = positions[order[0] as number] as vec3;
   const high = positions[order[order.length - 1] as number] as vec3;
   const dLow = distanceMm(low, reference);
   const dHigh = distanceMm(high, reference);
   // Nearer the head's centre is deeper. A tie keeps the low end, so the rule is total.
-  return dHigh < dLow - TIP_TIE_MM ? 'high' : 'low';
+  return dHigh < dLow - TIP_TIE_MM ? "high" : "low";
 }
 
 /** The end this electrode is numbered from: what the user pinned, or the heuristic. */
 export function resolveTip(
   group: Group,
   positions: readonly vec3[],
-  reference: vec3
-): 'low' | 'high' {
-  return group.tip === 'auto' ? tipEnd(positions, reference) : group.tip;
+  reference: vec3,
+): "low" | "high" {
+  return group.tip === "auto" ? tipEnd(positions, reference) : group.tip;
 }
 
 /** `t` — pin the other end, whichever one is currently in force. Never `'auto'` again. */
-export function flippedTip(group: Group, positions: readonly vec3[], reference: vec3): TipEnd {
-  return resolveTip(group, positions, reference) === 'low' ? 'high' : 'low';
+export function flippedTip(
+  group: Group,
+  positions: readonly vec3[],
+  reference: vec3,
+): TipEnd {
+  return resolveTip(group, positions, reference) === "low" ? "high" : "low";
 }
 
 /**
@@ -84,7 +97,10 @@ export function flippedTip(group: Group, positions: readonly vec3[], reference: 
  * The centre of the bound volume's bounds when there is one, and otherwise the centroid of every
  * contact in the set — which is a poor proxy for one electrode and a decent one for a whole implant.
  */
-export function tipReference(bounds: { min: vec3; max: vec3 } | null, set: ContactSet): vec3 {
+export function tipReference(
+  bounds: { min: vec3; max: vec3 } | null,
+  set: ContactSet,
+): vec3 {
   if (bounds !== null) {
     return [
       (bounds.min[0] + bounds.max[0]) / 2,
@@ -96,10 +112,13 @@ export function tipReference(bounds: { min: vec3; max: vec3 } | null, set: Conta
 }
 
 /** The contacts of `group`, ordered from the tip outward. */
-export function tipFirstOrder(contacts: readonly Contact[], tip: 'low' | 'high'): Contact[] {
+export function tipFirstOrder(
+  contacts: readonly Contact[],
+  tip: "low" | "high",
+): Contact[] {
   const order = orderAlong(contacts.map((c) => c.position));
   const along = order.map((index) => contacts[index] as Contact);
-  return tip === 'low' ? along : along.reverse();
+  return tip === "low" ? along : along.reverse();
 }
 
 /** One electrode's three numbers, for the panel and for the `stats` operation. */
@@ -134,8 +153,8 @@ export interface ShaftDiagram {
   height: number;
   /** The shaft baseline, from the first dot to the last. */
   line: { x1: number; y1: number; x2: number; y2: number };
-  /** One dot per contact, in the set's order; `tip` marks contact 1. */
-  dots: { cx: number; cy: number; tip: boolean }[];
+  /** One dot per contact, in the set's order; `tip` marks contact 1, `selected` the current one. */
+  dots: { cx: number; cy: number; tip: boolean; selected: boolean }[];
 }
 
 /** The viewBox the panel draws the sketch in. Pure numbers, so the helper stays testable. */
@@ -165,11 +184,15 @@ const DIAGRAM_SPAN_EPS = 1e-9;
  * case: a single dot at the midpoint.
  *
  * `null` only for an electrode with no contacts — there is nothing to draw.
+ *
+ * `selectedIndex` is the row the panel has selected, so the sketch can say *which* dot the list and
+ * the panes are talking about; `null`, or an index outside the electrode, marks nothing.
  */
 export function shaftDiagram(
   positions: readonly vec3[],
   tipIndex: number | null = null,
-  layout: ShaftDiagramLayout = DIAGRAM_LAYOUT
+  selectedIndex: number | null = null,
+  layout: ShaftDiagramLayout = DIAGRAM_LAYOUT,
 ): ShaftDiagram | null {
   const n = positions.length;
   if (n === 0) return null;
@@ -192,13 +215,16 @@ export function shaftDiagram(
     fracs =
       span > DIAGRAM_SPAN_EPS
         ? t.map((value) => (value - min) / span)
-        : positions.map((_position, index) => (n === 1 ? 0.5 : index / (n - 1)));
+        : positions.map((_position, index) =>
+            n === 1 ? 0.5 : index / (n - 1),
+          );
   }
 
   const dots = fracs.map((frac, index) => ({
     cx: padX + frac * drawWidth,
     cy: y,
     tip: index === tipIndex,
+    selected: index === selectedIndex,
   }));
   const xs = dots.map((dot) => dot.cx);
   return {
@@ -210,9 +236,15 @@ export function shaftDiagram(
 }
 
 /** Replace the named contacts inside a set, keeping the array's (drawing) order. */
-function withContacts(set: ContactSet, replaced: readonly Contact[]): ContactSet {
+function withContacts(
+  set: ContactSet,
+  replaced: readonly Contact[],
+): ContactSet {
   const byId = new Map(replaced.map((c) => [c.id, c]));
-  return { groups: set.groups, contacts: set.contacts.map((c) => byId.get(c.id) ?? c) };
+  return {
+    groups: set.groups,
+    contacts: set.contacts.map((c) => byId.get(c.id) ?? c),
+  };
 }
 
 export interface RenumberResult {
@@ -232,18 +264,18 @@ export function renumberTipFirst(
   set: ContactSet,
   group: string,
   reference: vec3,
-  pad: number
+  pad: number,
 ): RenumberResult {
   const contacts = contactsOf(set, group);
   if (contacts.length === 0) return { set, renamed: [] };
   const spec = set.groups.find((g) => g.name === group);
   const tip =
     spec === undefined
-      ? 'low'
+      ? "low"
       : resolveTip(
           spec,
           contacts.map((c) => c.position),
-          reference
+          reference,
         );
   const ordered = tipFirstOrder(contacts, tip);
   const renamed: { from: string; to: string }[] = [];
@@ -276,32 +308,37 @@ export function refitShaft(
   set: ContactSet,
   group: string,
   reference: vec3,
-  pad: number
+  pad: number,
 ): RefitResult | null {
   const contacts = contactsOf(set, group);
   if (contacts.length < 2) return null;
   const spec = set.groups.find((g) => g.name === group);
   const tip =
     spec === undefined
-      ? 'low'
+      ? "low"
       : resolveTip(
           spec,
           contacts.map((c) => c.position),
-          reference
+          reference,
         );
 
   const positions = contacts.map((c) => c.position);
   const spaced = respaceEven(positions);
   if (spaced === null) return null;
   // `respaceEven` answers in ascending-`t` order; the tip decides which end of that is contact 1.
-  const slots = tip === 'low' ? spaced : [...spaced].reverse();
+  const slots = tip === "low" ? spaced : [...spaced].reverse();
 
   const ordered = tipFirstOrder(contacts, tip);
   const renamed: { from: string; to: string }[] = [];
   const next = ordered.map((contact, index) => {
     const name = contactName(group, index + 1, pad);
     if (name !== contact.name) renamed.push({ from: contact.name, to: name });
-    return { ...contact, name, ordinal: index + 1, position: slots[index] as vec3 };
+    return {
+      ...contact,
+      name,
+      ordinal: index + 1,
+      position: slots[index] as vec3,
+    };
   });
 
   const after = withContacts(set, next);
