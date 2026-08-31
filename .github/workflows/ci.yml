@@ -1,0 +1,54 @@
+# The module repository's own gate (Tetravox's extension design, O5): typecheck against the pinned
+# SDK, run the suites, build the bundle, and prove the built bytes are loadable — no app smoke test
+# in this phase, because the app half is proven in Tetravox's own `extensions.spec.ts`.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The shared contacts kit, for the suites that execute it. Pinned to one Tetravox commit and
+      # verified byte for byte (`contacts.pin.json`); never committed, never shipped — the loaded
+      # bundle gets the kit from the host. Without this step those suites skip.
+      - name: Fetch the pinned contacts kit
+        run: node scripts/fetch-contacts.mjs
+
+      - name: Typecheck against the SDK
+        run: pnpm run typecheck
+
+      # Run once, and hold the run to having *executed* the kit-dependent suites: a green build
+      # whose skipped half was the geometry and the scene block would say nothing about either.
+      - name: Test
+        run: |
+          pnpm exec vitest run --reporter=default --reporter=json --outputFile=.build/vitest.json
+          node scripts/check-no-skips.mjs .build/vitest.json
+
+      - name: Build the bundle and the manifest
+        run: pnpm run build
+
+      # The one rule: a downloaded module is one ESM file that resolves no specifier of its own.
+      - name: Zero imports, size, and the inlined shim
+        run: node scripts/check-bundle.mjs
+
+      # The app's own validator, from the SDK tarball.
+      - name: Validate manifest.json
+        run: node scripts/validate-manifest.mjs
