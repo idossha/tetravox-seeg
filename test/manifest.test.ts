@@ -69,7 +69,10 @@ describe('the manifest', () => {
     // asked for a second window that changed nothing.
     expect(seegManifest.ui?.popout).toBe('allowed');
     expect(seegManifest.ui?.windowWidth ?? 0).toBeGreaterThanOrEqual(560);
-    expect(seegManifest.ui?.windowHeight ?? 0).toBeGreaterThanOrEqual(600);
+    // Short on purpose: the wide layout's controls column is ~380 px tall and the list scrolls
+    // beside it, so the window is asked to open fitted rather than mostly empty.
+    expect(seegManifest.ui?.windowHeight ?? 0).toBeGreaterThanOrEqual(360);
+    expect(seegManifest.ui?.windowHeight ?? 0).toBeLessThanOrEqual(520);
   });
 
   it('does not ask for a window it would be given by default', () => {

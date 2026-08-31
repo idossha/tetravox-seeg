@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-08-31
+
+- **The pop-out window opens fitted to the panel** rather than mostly empty: the manifest asks for
+  720 × 420 instead of 720 × 900. The wide layout's controls column is about 380 px tall and the
+  contact list scrolls beside it, so the extra height was blank panel. A subject with many shafts is
+  a window the user drags taller, which is the direction that costs nothing.
+
 ## 0.1.3 — 2026-08-31
 
 - The editor can be **popped out into its own window** (Tetravox core §13.10, the release after

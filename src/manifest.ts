@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.1.3',
+  version: '0.1.4',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -167,10 +167,14 @@ export const seegManifest: ModuleManifest = {
    * fifteen-shaft subject is ~200 contact rows behind a `max-h-[55%]` scroller, and on a second
    * monitor the whole table can be open beside a full-height view grid.
    *
-   * The size is the two-column layout's own threshold (560 px) with margin, and tall because the
-   * list is what benefits: the panel reflows on its *measured width* rather than on `placement`, so
-   * a user who narrows this window gets the docked layout back and nothing is conditioned on which
-   * surface it happens to be drawn on.
+   * The width is the two-column layout's own threshold (560 px) with margin: the panel reflows on
+   * its *measured width* rather than on `placement`, so a user who narrows this window gets the
+   * docked layout back and nothing is conditioned on which surface it happens to be drawn on.
+   *
+   * The height is deliberately short — the wide layout's controls column is ~380 px and the list
+   * scrolls beside it, so a tall window opens mostly empty (2026-08-31: it did, and looked it). A
+   * window that opens fitted to its content is one the user drags *bigger* when a fifteen-shaft
+   * subject wants the rows, rather than smaller every time.
    */
-  ui: { popout: 'allowed', windowWidth: 720, windowHeight: 900 },
+  ui: { popout: 'allowed', windowWidth: 720, windowHeight: 420 },
 };
