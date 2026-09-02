@@ -23,6 +23,11 @@
  *    layer, the next `layers` event finds nothing different and stops.
  *  * **Nothing renumbers implicitly.** Loading, placing, dragging, snapping and deleting leave every
  *    number and name alone; only Re-fit and Renumber relabel (see `shaft.ts`).
+ *  * **The drag guide is derived state, drawn nowhere else.** While `dragBase !== null` the layer
+ *    additionally carries the dragged electrode's fitted shaft axis and a distance readout beside
+ *    each immediate neighbour (`dragGuide`, `src/dragguide.ts`); the moment the drag ends the patch
+ *    that clears it is the same patch that would have been written anyway, so there is no separate
+ *    "erase the overlay" step to forget (§13's block never carries it — it is never persisted).
  */
 
 import { ModuleHostError, contacts } from '@tetravox/module-sdk';
@@ -41,7 +46,10 @@ import type {
   PointsLayer,
   VolumeLayer,
   vec3,
+  vec4,
 } from '@tetravox/module-sdk';
+import type { DragGuide } from './dragguide';
+import { dragGuide } from './dragguide';
 import type { ShaftDiagram, ShaftStats } from './shaft';
 import {
   allShaftStats,
@@ -88,6 +96,7 @@ const {
   cssColor,
   ctDisplayPreset,
   dirtyCount,
+  distanceMm,
   editlogDate,
   emptySet,
   formatEditlog,
@@ -99,6 +108,7 @@ const {
   paletteColor,
   parseTable,
   resolveColumns,
+  shaftGeometry,
   snapContacts,
   statusOf,
   t1DisplayPreset,
@@ -112,13 +122,26 @@ const EDITLOG_TEMPLATE = '{stem}_editlog.json';
 /** `manifest.version`, quoted into the editlog's `tool` field. */
 const TOOL = 'Tetravox sEEG contacts 0.1.0';
 
+/**
+ * The drag guide's highlight colour — a warm amber, opaque.
+ *
+ * Every electrode's own shaft line is drawn in its group colour (`paletteColor`), so the guide has
+ * to read as "the tool", not as one more electrode: amber sits outside the palette's blue-green-
+ * violet rotation and is the same warmth clinical tooling already uses for an active/pending state,
+ * so it stays legible over any group colour it happens to cross.
+ */
+const DRAG_GUIDE_COLOR: vec4 = [1, 0.72, 0.2, 1];
+
 /** One row of the panel's contact list. */
 export interface SeegRow {
   id: string;
   name: string;
   status: string;
-  /** Distance from the active pane's plane, in millimetres, or `null` in the 3-D pane. */
-  offPlaneMm: number | null;
+  /**
+   * True 3-D centre-to-centre distance, in millimetres, to the previous contact by ordinal within
+   * the same electrode. `null` for the first contact of a group, which has no previous contact.
+   */
+  spacingMm: number | null;
   selected: boolean;
   /** True for the contact this electrode is numbered from. */
   tip: boolean;
@@ -178,8 +201,15 @@ interface HistoryEntry {
 
 const CT_NAME = /(^|[^a-z])ct([^a-z]|$)|_ct\./i;
 
-function dot(a: vec3, b: vec3): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+/**
+ * The panel row's spacing value at index `i` of an ordinal-ordered contact list: `null` for the
+ * first contact of the group (no previous), otherwise the true 3-D centre-to-centre distance to
+ * `ordered[i - 1]`. Callers pass `contactsOf`'s result, which is already ordered by ordinal — the
+ * same neighbour rule `dragGuide` and `shaftGeometry` use — so "previous array element" is
+ * "previous ordinal" here, not "previous in file order".
+ */
+export function spacingMmAt(ordered: readonly Contact[], i: number): number | null {
+  return i === 0 ? null : distanceMm(ordered[i - 1]!.position, ordered[i]!.position);
 }
 
 /** The canonical source a set with no file of its own is written against. */
@@ -343,9 +373,55 @@ export function createModel(host: ModuleHost): SeegModel {
   /** The three display switches as one value — what the layer and the block both read. */
   const look = (): ContactLook => ({ ghost, wire, dotRadiusPx });
 
+  /**
+   * `layerPatch(set, look())`, with the drag guide folded in — the one place that composes what the
+   * contacts layer looks like, so `writeLayer` and `adoptLayerPositions` cannot disagree about
+   * whether the overlay is on the layer.
+   *
+   * Active only while `dragBase !== null` (§13's drag predicate) with `selectedId` naming the
+   * dragged contact and `dragGuide` returning a fit. Inactive, the patch explicitly restores
+   * `labelSource: 'names'` and `labels: []` — restoring in only one direction is what leaves a
+   * finished drag's overlay painted on the layer forever.
+   */
+  const contactPatch = (): Partial<PointsLayer> => {
+    const patch = layerPatch(set, look());
+    const guide: DragGuide | null =
+      dragBase !== null && selectedId !== null ? dragGuide(set, selectedId) : null;
+
+    if (guide === null) {
+      return { ...patch, labelSource: 'names', labels: [] };
+    }
+
+    const names = set.contacts.map((c) => ({ position: c.position, text: c.name }));
+
+    let lineSegments = patch.lineSegments ?? new Float32Array(0);
+    let lineColors = patch.lineColors ?? null;
+    if (guide.axis.length > 0) {
+      // `lineColors` shorter than 4 · segments is ignored wholesale (falls back to `lineColor`), so
+      // appending one segment's colours without first synthesising colours for the existing shaft
+      // segments would silently strip every electrode's per-group colour the moment a drag starts.
+      if (lineColors === null) lineColors = shaftGeometry(set).colors;
+      lineSegments = Float32Array.from([...lineSegments, ...guide.axis]);
+      lineColors = Float32Array.from([...lineColors, ...DRAG_GUIDE_COLOR]);
+    }
+
+    return {
+      ...patch,
+      lineSegments,
+      ...(lineColors !== null ? { lineColors } : {}),
+      labelSource: 'labels',
+      showLabels: true,
+      // Names first, then the guide's distance readouts, so contact names do not vanish for the
+      // duration of the drag. Known cost: `labelColorSource: 'points'` only applies under
+      // `labelSource: 'names'`, so while a drag is in flight every name label takes one flat colour
+      // instead of its point's — the price of not standing up a second layer just for this overlay.
+      labels: [...names, ...guide.labels],
+    };
+  };
+
   const writeLayer = (): void => {
     if (layerId === null) return;
-    host.scene.updateLayer<PointsLayer>(layerId, layerPatch(set, look()));
+    host.scene.updateLayer<PointsLayer>(layerId, contactPatch());
   };
 
   /**
@@ -654,7 +730,6 @@ export function createModel(host: ModuleHost): SeegModel {
   const rowsOf = (): SeegRow[] => {
     if (electrode === null) return [];
     const contacts = contactsOf(set, electrode);
-    const plane = host.scene.activePlane();
     const group = set.groups.find((g) => g.name === electrode);
     const tip =
       group === undefined || contacts.length === 0
@@ -667,23 +742,11 @@ export function createModel(host: ModuleHost): SeegModel {
               reference()
             )
           )[0]?.id ?? null);
-    return contacts.map((contact) => ({
+    return contacts.map((contact, i) => ({
       id: contact.id,
       name: contact.name,
       status: statusOf(contact),
-      offPlaneMm:
-        plane === null
-          ? null
-          : Math.abs(
-              dot(
-                [
-                  contact.position[0] - plane.point[0],
-                  contact.position[1] - plane.point[1],
-                  contact.position[2] - plane.point[2],
-                ],
-                plane.normal
-              )
-            ),
+      spacingMm: spacingMmAt(contacts, i),
       selected: contact.id === selectedId,
       tip: contact.id === tip,
     }));
@@ -1043,9 +1106,10 @@ export function createModel(host: ModuleHost): SeegModel {
     });
     if (!changed) return;
     set = { groups: set.groups, contacts };
-    // Only the shaft lines: rewriting `points` from the set would fight the drag the engine is in
-    // the middle of. The next `layers` event finds nothing different, so this cannot loop.
-    host.scene.updateLayer<PointsLayer>(layer.id, layerPatch(set, look()));
+    // Only the shaft lines (and the drag guide riding beside them): rewriting `points` from the set
+    // would fight the drag the engine is in the middle of. The next `layers` event finds nothing
+    // different, so this cannot loop.
+    host.scene.updateLayer<PointsLayer>(layer.id, contactPatch());
     notify();
   };
 
@@ -1084,14 +1148,23 @@ export function createModel(host: ModuleHost): SeegModel {
           electrode = contact.group;
           host.scene.setCursor([...contact.position] as vec3);
         }
+        // `dragBase !== null` is the drag predicate (§13), so the guide belongs on the layer from
+        // this moment — not only once the engine's first `layers` move event repaints the shafts.
+        writeLayer();
         notify();
         return;
       }
       case 'dragEnd': {
         adoptLayerPositions();
         const base = dragBase;
+        // Cleared before the repaint below, not after: `contactPatch` reads `dragBase` to decide
+        // whether the guide is active, and a drag that ends is a drag that is no longer in flight
+        // regardless of whether anything moved.
         dragBase = null;
-        if (base === null) return;
+        if (base === null) {
+          writeLayer();
+          return;
+        }
         const moved = base.set.contacts.some((was) => {
           const now = set.contacts.find((c) => c.id === was.id);
           return (
@@ -1102,8 +1175,10 @@ export function createModel(host: ModuleHost): SeegModel {
           );
         });
         // A plain click emits `selected` and then a zero-length `dragEnd`; comparing positions is
-        // what keeps that from becoming an undo step and a dirty mark.
+        // what keeps that from becoming an undo step and a dirty mark. Either way the layer is
+        // rewritten so the guide painted at `selected` cannot survive an unmoved `dragEnd`.
         if (moved) commit(base);
+        else writeLayer();
         return;
       }
       case 'cleared': {
@@ -1114,8 +1189,12 @@ export function createModel(host: ModuleHost): SeegModel {
         // replacement that lost the selected id — which is every delete of the selected contact.
         // Treating it as a disarm used to leave `armed` false while the engine was still armed, so
         // the module stopped re-arming after the next scene load for no reason a user could see.
+        // A drag guide may have been painted for the contact this clear is dropping; every branch
+        // below returns after `notify`, so repaint here once rather than on each of them.
+        const hadGuide = dragBase !== null;
         selectedId = null;
         dragBase = null;
+        if (hadGuide) writeLayer();
         if (reason === 'selection') {
           notify();
           return;
@@ -1177,10 +1256,6 @@ export function createModel(host: ModuleHost): SeegModel {
       host.ui.toast('info', `Contacts bound to ${ctName ?? 'the volume'} (${baseNameOf(path)}).`);
     })
   );
-  // The off-plane column is measured against the plane through the cursor (§13.1's `activePlane`),
-  // so the list is re-read whenever the crosshair moves. The rows are plain spans and there are a
-  // few hundred of them at most; the info panel above already re-renders on the same edge.
-  host.subscribe(host.scene.on('cursor', () => notify()));
   host.subscribe(
     host.scene.on('sceneCleared', () => {
       set = emptySet();
