@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5 — 2026-09-02
+
+- **A drag now shows a guide**: while a contact is held, the layer draws the electrode's fitted
+  shaft axis as one highlighted line and a 3D centre-to-centre distance beside each immediate
+  neighbour, so a contact can be aimed back onto the line it left. Nothing about it persists — it
+  disappears the instant the drag ends, on every path that can end one (a move, an unmoved click,
+  and a clear). Each distance label is offset 2.5 mm perpendicular to the fitted shaft axis so the
+  text clears the rod and the contact-name labels rather than sitting on top of them; the offset
+  direction is derived from the axis alone (not the camera, which a module cannot see, and not the
+  dragged position), so it stays stable — the same side, every render — including for a near-vertical
+  shaft, where the obvious cross-with-world-up construction degenerates to zero.
+- **The contact list's distance column is now 3-D neighbour spacing**, not the old plane-relative
+  offset: each row shows the true centre-to-centre distance to the previous contact by ordinal on
+  the same electrode (`—` for the first contact of a group), matching this feature's standing rule
+  that every distance shown is 3D. It updates live while dragging.
+
 ## 0.1.4 — 2026-08-31
 
 - **The pop-out window opens fitted to the panel** rather than mostly empty: the manifest asks for

@@ -149,9 +149,9 @@ function ContactRow({
       <StatusChip status={row.status} />
       <span
         className="flex-1 text-right tabular-nums text-tvx-dim"
-        title="from the active pane's plane"
+        title="3-D centre-to-centre distance to the previous contact"
       >
-        {millimetres(row.offPlaneMm)}
+        {millimetres(row.spacingMm)}
       </span>
       <button
         type="button"
