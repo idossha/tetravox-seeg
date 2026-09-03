@@ -218,3 +218,51 @@ describe.skipIf(!HAS_CONTACTS)("dragGuide", () => {
     }
   });
 });
+
+/**
+ * The model column of the guide's distance readouts.
+ *
+ * A drag is aimed: the user is putting a contact back on the rod, and the number that says where
+ * "back" is is the manufacturer's spacing for *that* gap. It is stated beside the measured one and
+ * never instead of it — the measurement is the thing that moves while the contact is held.
+ */
+describe.skipIf(!HAS_CONTACTS)("dragGuide's model distances", () => {
+  // A Behnke-Fried lead's first two gaps: 3.0 then 5.5. The pair matters because a shaft whose
+  // gaps are all equal cannot tell an off-by-one indexing bug from a correct one.
+  const BF_GAPS = [3, 5.5, 5.5];
+
+  it("states the model gap beside the measured one, indexed by ordinal", () => {
+    const set = setOf(
+      contact("a", "A", 1, [0, 0, 0]),
+      contact("b", "A", 2, [3.2, 0, 0]),
+      contact("c", "A", 3, [8.9, 0, 0]),
+    );
+    const guide = dragGuide(set, "b", BF_GAPS);
+    expect(guide).not.toBeNull();
+    // Below is the 1–2 gap (model 3.0); above is the 2–3 gap (model 5.5).
+    expect(guide?.labels[0]?.text).toBe("3.2 / 3.0 mm");
+    expect(guide?.labels[1]?.text).toBe("5.7 / 5.5 mm");
+  });
+
+  it("is the bare measurement it always was for an electrode with no model", () => {
+    const set = setOf(
+      contact("a", "A", 1, [0, 0, 0]),
+      contact("b", "A", 2, [3.2, 0, 0]),
+      contact("c", "A", 3, [8.9, 0, 0]),
+    );
+    expect(dragGuide(set, "b")?.labels[0]?.text).toBe("3.2 mm");
+    expect(dragGuide(set, "b", null)?.labels[0]?.text).toBe("3.2 mm");
+  });
+
+  it("says nothing rather than repeating the last gap past the model's end", () => {
+    const set = setOf(
+      contact("a", "A", 1, [0, 0, 0]),
+      contact("b", "A", 2, [3, 0, 0]),
+      contact("c", "A", 3, [8.5, 0, 0]),
+    );
+    // A one-gap model on a three-contact electrode: the 2–3 label has no model number to state.
+    const guide = dragGuide(set, "b", [3]);
+    expect(guide?.labels[0]?.text).toBe("3.0 / 3.0 mm");
+    expect(guide?.labels[1]?.text).toBe("5.5 mm");
+  });
+});

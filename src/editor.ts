@@ -50,6 +50,24 @@ import type {
 } from '@tetravox/module-sdk';
 import type { DragGuide } from './dragguide';
 import { dragGuide } from './dragguide';
+import type {
+  ElectrodeModel,
+  GeometrySidecarEntry,
+  ModelSource,
+  ModelSources,
+  PeakFn,
+  SampleFn,
+} from './modelsnap';
+import {
+  AXIS_SNAP_MIN_CONTACTS,
+  extendAlongAxis,
+  gapResiduals,
+  modelsFromTable,
+  parseGeometrySidecar,
+  parseSiteCsv,
+  planAxisSnap,
+  resolveElectrodeModel,
+} from './modelsnap';
 import { seegManifest } from './manifest';
 import type { ShaftDiagram, ShaftStats } from './shaft';
 import {
@@ -84,7 +102,6 @@ const {
   CONTACT_LAYER_STYLE,
   ContactTableError,
   SNAP_RADIUS_DEFAULT_MM,
-  applySnap,
   buildEditlog,
   clampDotRadius,
   clampSnapRadius,
@@ -130,7 +147,7 @@ const EDITLOG_TEMPLATE = '{stem}_editlog.json';
  * forget. `test/manifest.test.ts` holds the manifest to `package.json` in turn, so the one number
  * left to bump by hand cannot silently disagree with the version the repo says it is.
  */
-const TOOL = `Tetravox sEEG contacts ${seegManifest.version}`;
+export const TOOL = `Tetravox sEEG contacts ${seegManifest.version}`;
 
 /**
  * The drag guide's highlight colour — a warm amber, opaque.
@@ -155,6 +172,39 @@ export interface SeegRow {
   selected: boolean;
   /** True for the contact this electrode is numbered from. */
   tip: boolean;
+}
+
+/**
+ * One row of the panel's per-gap table — always a 3-D centre-to-centre distance beside the model's.
+ *
+ * `residualMm` is `measured − model`, signed: a shaft whose contacts are all slightly *long* is a
+ * different fault from one contact that landed between two, and a table of absolute values hides
+ * which. `flagged` is `|residual| > 0.75 mm`, which is about a third of a contact length.
+ */
+export type { ModelSource };
+
+export interface SeegGapRow {
+  /** The gap between contact `index` and contact `index + 1`, 1-based, tip-first. */
+  index: number;
+  measuredMm: number;
+  modelMm: number;
+  residualMm: number;
+  flagged: boolean;
+}
+
+/** What the panel's model section shows for the selected electrode. */
+export interface SeegModelView {
+  /** The model key, as its source spelled it — or `'measured'` for a `sidecar-measured` geometry. */
+  name: string;
+  source: ModelSource;
+  /** How many contacts the model says this electrode has. */
+  expected: number;
+  /** How many the table actually carries. */
+  present: number;
+  contactLengthMm: number | null;
+  gaps: SeegGapRow[];
+  /** How many gaps are more than 0.75 mm from the model. */
+  flagged: number;
 }
 
 export interface SeegElectrodeOption {
@@ -185,6 +235,20 @@ export interface SeegView {
   sizeBounds: { min: number; max: number; step: number };
   placing: boolean;
   stats: ShaftStats | null;
+  /** The selected electrode's resolved geometry, or `null` when nothing resolved one. */
+  model: SeegModelView | null;
+  /** How many electrodes in the whole set have a model — what "Snap all to model" would touch. */
+  modelledElectrodes: number;
+  /** Where the module found geometry at all, for the section's one-line provenance. */
+  modelSource: ModelSource | 'none';
+  /**
+   * What the last snap did, in one sentence, or `null` before one has run.
+   *
+   * There is exactly one Snap now, and it behaves differently depending on whether the electrode's
+   * model resolved — so the panel has to say which happened. Nothing else in the view can: the
+   * contacts look the same either way.
+   */
+  snapNote: string | null;
   tipName: string | null;
   /** The selected electrode's shaft sketch, or `null` when nothing is selected. */
   diagram: ShaftDiagram | null;
@@ -251,6 +315,17 @@ export interface SeegModel {
   setSize(px: number): void;
   jumpTo(id: string): void;
   deleteContact(id: string): void;
+  /**
+   * Read a site electrode list — `name,target,part_number,n_contacts,…` — for its part numbers.
+   *
+   * A panel-only entry point, and it has to be: the list lives at
+   * `<bids>/sub-<id>/etc/sub-<id>_electrodes.csv`, which is **four** directories up from the
+   * derivative's `ieeg/`, and a sibling rule may ascend at most three (the manifest validator's
+   * `MAX_ASCENTS`). So the module cannot derive that path and have it admitted; the user names the
+   * file in a sheet, which is what puts it on the read allow-list. Nothing about the contacts
+   * changes — only which model each electrode is understood to be.
+   */
+  loadElectrodeList(): Promise<void>;
 }
 
 export function createModel(host: ModuleHost): SeegModel {
@@ -270,6 +345,8 @@ export function createModel(host: ModuleHost): SeegModel {
   let banner: string | null = null;
   let warning: string | null = null;
   let message: string | null = null;
+  /** The one line the panel prints about the last snap: which mode ran, and what it was aimed at. */
+  let snapNote: string | null = null;
   let busy = false;
   let layerId: LayerId | null = null;
   let datasetId: string | null = null;
@@ -291,6 +368,23 @@ export function createModel(host: ModuleHost): SeegModel {
     renumbered: new Set<string>(),
     snapped: new Set<string>(),
   };
+  /**
+   * How each electrode was last snapped, for the editlog beside `snapped`.
+   *
+   * `'axis'` is the snap every scope now runs: the contacts were put **on** the electrode's fitted
+   * axis, at the peak of their own 1-D intensity profile along it. `'axis-model'` is the same with
+   * the manufacturer's gap template regularising those positions. `'free'` is the per-contact
+   * centroid snap, which survives only for a shaft with fewer than three contacts — too few to fit
+   * an axis through. The three make different claims about a position and `snapped: true` alone
+   * cannot tell them apart, and the sidecar is a contract with `seegprep` rather than a note to
+   * ourselves.
+   */
+  const snapModes = new Map<string, 'free' | 'axis' | 'axis-model'>();
+  /** seegprep's `_electrodes-geometry.json` for the open subject, by electrode. */
+  let sidecarGeometry: Map<string, GeometrySidecarEntry> | null = null;
+  /** The site CSV's `part_number` and `n_contacts`, by electrode, when one has been opened. */
+  let sitePartNumbers: Map<string, string> | null = null;
+  let siteCounts: Map<string, number> | null = null;
 
   /**
    * Forget which electrodes this session's operations touched — **per table, not per window**.
@@ -306,6 +400,11 @@ export function createModel(host: ModuleHost): SeegModel {
     operations.refit.clear();
     operations.renumbered.clear();
     operations.snapped.clear();
+    // The snap *mode* is keyed by electrode name for the same reason and goes with them: sub-02's
+    // LHIP is not sub-01's, and an editlog claiming a model snap that never ran on this table would
+    // be the sidecar lying about the thing it exists to record.
+    snapNote = null;
+    snapModes.clear();
   };
 
   const listeners = new Set<() => void>();
@@ -395,8 +494,18 @@ export function createModel(host: ModuleHost): SeegModel {
    */
   const contactPatch = (): Partial<PointsLayer> => {
     const patch = layerPatch(set, look());
+    // The dragged contact's own electrode decides the guide's model column: a distance label that
+    // named some other shaft's spacing would be worse than no label at all.
+    const draggedGroup =
+      selectedId === null ? null : (set.contacts.find((c) => c.id === selectedId)?.group ?? null);
     const guide: DragGuide | null =
-      dragBase !== null && selectedId !== null ? dragGuide(set, selectedId) : null;
+      dragBase !== null && selectedId !== null
+        ? dragGuide(
+            set,
+            selectedId,
+            draggedGroup === null ? null : (modelOf(draggedGroup)?.gapsMm ?? null)
+          )
+        : null;
 
     if (guide === null) {
       return { ...patch, labelSource: 'names', labels: [] };
@@ -686,6 +795,12 @@ export function createModel(host: ModuleHost): SeegModel {
     // editlog beside the table that was open, and the T1 — the block's `source.t1` is provenance
     // for *this* table, and a `load` operation that names one calls `showT1` right after this.
     forgetOperations();
+    // The geometry sources belong to the *subject* whose table was open, exactly as the operation
+    // flags and the banner do: sub-02's LHIP is a different rod from sub-01's, and a sidecar left
+    // over from the previous subject would put a template on this one's contacts.
+    sidecarGeometry = null;
+    sitePartNumbers = null;
+    siteCounts = null;
     banner = null;
     t1Path = null;
     source = {
@@ -722,6 +837,23 @@ export function createModel(host: ModuleHost): SeegModel {
       `${set.contacts.length} contacts on ${set.groups.length} electrodes from ${baseNameOf(path)}.`
     );
     return true;
+  };
+
+  /**
+   * Read seegprep's `_electrodes-geometry.json` beside the table, if the subject has one.
+   *
+   * Best effort throughout: a subject without the sidecar is the ordinary case (it arrived in
+   * seegprep PR #2 and older derivatives predate it), an unreadable one is the same as an absent
+   * one, and a sidecar that names electrodes this table does not have simply never matches. The
+   * catalogue behind it and the "no model at all" fallback behind *that* are what make each of
+   * those a smaller loss than a failure.
+   */
+  const readGeometrySidecar = async (path: string): Promise<void> => {
+    const text = await host.files.readText(path);
+    if (text === null) return;
+    const parsed = parseGeometrySidecar(text);
+    sidecarGeometry = parsed.size === 0 ? null : parsed;
+    notify();
   };
 
   const readEditlogBanner = async (path: string): Promise<void> => {
@@ -762,6 +894,36 @@ export function createModel(host: ModuleHost): SeegModel {
     }));
   };
 
+  /**
+   * The selected electrode's model section: what it is, how many contacts it should have, and every
+   * gap measured against it.
+   *
+   * The gaps are measured on the **current** positions, not on the last snap's plan, so the table
+   * updates as the user drags — it is the readout that says whether a hand correction helped.
+   */
+  const modelViewOf = (
+    group: string | null,
+    models: ReadonlyMap<string, ElectrodeModel | null>
+  ): SeegModelView | null => {
+    if (group === null) return null;
+    const model = models.get(group) ?? null;
+    if (model === null) return null;
+    const ordered = tipFirstContacts(group);
+    const gaps = gapResiduals(
+      ordered.map((c) => c.position),
+      model.gapsMm
+    );
+    return {
+      name: model.model,
+      source: model.source,
+      expected: model.nContacts,
+      present: ordered.length,
+      contactLengthMm: model.contactLengthMm ?? null,
+      gaps,
+      flagged: gaps.filter((g) => g.flagged).length,
+    };
+  };
+
   const view = (): SeegView => {
     // `placing` is read off the engine, which changes it without an event (Esc's place → select
     // step), so the cache is invalidated by comparing rather than only by `notify`. It still returns
@@ -769,6 +931,8 @@ export function createModel(host: ModuleHost): SeegModel {
     const placing = placingNow();
     if (cached !== null && cached.placing === placing) return cached;
     const rows = rowsOf();
+    const models = modelsOfAll();
+    const modelView = modelViewOf(electrode, models);
     cached = {
       ready: layerId !== null && set.contacts.length > 0,
       subject: tsvPath === null ? null : subjectOf(tsvPath),
@@ -794,6 +958,12 @@ export function createModel(host: ModuleHost): SeegModel {
       },
       placing,
       stats: electrode === null ? null : shaftStats(set, electrode),
+      model: modelView,
+      modelledElectrodes: [...models.values()].filter((m) => m !== null).length,
+      modelSource:
+        modelView?.source ??
+        ([...models.values()].find((m) => m !== null)?.source ?? 'none'),
+      snapNote,
       tipName: rows.find((r) => r.tip)?.name ?? null,
       diagram:
         electrode === null
@@ -849,26 +1019,336 @@ export function createModel(host: ModuleHost): SeegModel {
     return selectedId === null ? [] : [selectedId];
   };
 
-  const doSnap = (
+  /** What one electrode's snap did, for the toast, the panel's line and the editlog. */
+  interface SnapReport {
+    electrode: string;
+    mode: 'axis' | 'axis-model' | 'free';
+    /** The model whose gaps regularised it, when one did. */
+    model: string | null;
+    moved: number;
+    meanShiftMm: number;
+    /** The measured median pitch the search window was sized from. */
+    pitchMm: number;
+    /** How many contacts had no metal and took the model's template slot. */
+    templateHeld: number;
+    outliers: number;
+  }
+
+  /**
+   * **The** snap — every scope, every host, model or no model.
+   *
+   * The scope decides which contacts *move*; it never decides how they are placed. Even a
+   * single-contact snap fits the whole electrode's axis and puts that contact on it, because the
+   * electrode is one rigid rod and a contact's lateral position is not its own property (see
+   * `planAxisSnap`).
+   *
+   * An electrode with fewer than {@link AXIS_SNAP_MIN_CONTACTS} contacts has no axis worth fitting,
+   * and only that electrode falls back to the old per-contact centroid snap. Whatever the scope, the
+   * whole thing is **one** history entry.
+   */
+  const doSnap = async (
     scope: 'contact' | 'electrode' | 'all',
     radiusMm: number
-  ): { moved: number; meanShiftMm: number } => {
+  ): Promise<{ moved: number; meanShiftMm: number; reports: SnapReport[] }> => {
     if (datasetId === null) throw new ModuleHostError('no CT is loaded to snap against');
     const ids = idsForScope(scope);
-    if (ids.length === 0) return { moved: 0, meanShiftMm: 0 };
+    if (ids.length === 0) return { moved: 0, meanShiftMm: 0, reports: [] };
     const dataset = datasetId;
-    const before = snapshot();
-    const result = snapContacts(set, ids, radiusMm, (world, r) =>
-      host.scene.peakCentroid(dataset, world, r)
-    );
-    if (result.moved === 0) return { moved: 0, meanShiftMm: 0 };
-    set = applySnap(set, result);
-    for (const id of ids) {
-      const contact = set.contacts.find((c) => c.id === id);
-      if (contact !== undefined) operations.snapped.add(contact.group);
+    const wanted = new Set(ids);
+    const peak: PeakFn = (world, r) => host.scene.peakCentroid(dataset, world, r);
+    const sample = sampleOracle(dataset);
+    const models = modelsOfAll();
+
+    const groups = [...new Set(set.contacts.filter((c) => wanted.has(c.id)).map((c) => c.group))];
+    const moves = new Map<string, vec3>();
+    const reports: SnapReport[] = [];
+    const perContact: string[] = [];
+    let total = 0;
+    let moved = 0;
+
+    for (const group of groups) {
+      const ordered = tipFirstContacts(group);
+      const mine = ordered.filter((c) => wanted.has(c.id));
+      const model = models.get(group) ?? null;
+      const plan =
+        ordered.length < AXIS_SNAP_MIN_CONTACTS
+          ? null
+          : await planAxisSnap({
+              positionsTipFirst: ordered.map((c) => c.position),
+              gapsMm: model?.gapsMm ?? null,
+              sample,
+              peak,
+              snapRadiusMm: radiusMm,
+            });
+      if (plan === null) {
+        perContact.push(...mine.map((c) => c.id));
+        continue;
+      }
+      let shift = 0;
+      let count = 0;
+      ordered.forEach((contact, index) => {
+        if (!wanted.has(contact.id)) return;
+        const position = plan.positions[index] as vec3;
+        shift += distanceMm(contact.position, position);
+        count += 1;
+        moves.set(contact.id, position);
+      });
+      total += shift;
+      moved += count;
+      reports.push({
+        electrode: group,
+        mode: plan.mode,
+        model: plan.mode === 'axis-model' ? (model?.model ?? null) : null,
+        moved: count,
+        meanShiftMm: count === 0 ? 0 : shift / count,
+        pitchMm: plan.pitchMm,
+        templateHeld: plan.templateHeld,
+        outliers: plan.outliers,
+      });
     }
+
+    // The short-shaft fallback: two contacts define a line but not a rod, so those keep the snap
+    // this module has always had — the local intensity centroid, wherever it is.
+    if (perContact.length > 0) {
+      const free = snapContacts(set, perContact, radiusMm, peak);
+      for (const [id, position] of free.positions) moves.set(id, position);
+      total += free.meanShiftMm * free.moved;
+      moved += free.moved;
+      for (const group of new Set(
+        set.contacts.filter((c) => free.positions.has(c.id)).map((c) => c.group)
+      )) {
+        reports.push({
+          electrode: group,
+          mode: 'free',
+          model: null,
+          moved: [...free.positions.keys()].filter(
+            (id) => set.contacts.find((c) => c.id === id)?.group === group
+          ).length,
+          meanShiftMm: free.meanShiftMm,
+          pitchMm: 0,
+          templateHeld: 0,
+          outliers: 0,
+        });
+      }
+    }
+
+    if (moves.size === 0) return { moved: 0, meanShiftMm: 0, reports };
+    const before = snapshot();
+    set = {
+      groups: set.groups,
+      contacts: set.contacts.map((contact) => {
+        const position = moves.get(contact.id);
+        return position === undefined ? contact : { ...contact, position };
+      }),
+    };
+    for (const report of reports) {
+      if (report.moved === 0) continue;
+      operations.snapped.add(report.electrode);
+      snapModes.set(report.electrode, report.mode);
+    }
+    snapNote = snapLine(reports);
     commit(before);
-    return { moved: result.moved, meanShiftMm: result.meanShiftMm };
+    return { moved, meanShiftMm: moved === 0 ? 0 : total / moved, reports };
+  };
+
+  /**
+   * The one line the panel prints after a snap: which mode ran, and what it was aimed at.
+   *
+   * The two modes make different claims about the same contacts and a user cannot tell them apart by
+   * looking, so with one Snap button now, this readout is how you know which ran.
+   */
+  const snapLine = (reports: readonly SnapReport[]): string | null => {
+    const real = reports.filter((r) => r.moved > 0);
+    if (real.length === 0) return null;
+    const modes = new Set(real.map((r) => r.mode));
+    const contacts = real.reduce((n, r) => n + r.moved, 0);
+    if (real.length === 1) {
+      const only = real[0] as SnapReport;
+      const held =
+        only.templateHeld === 0
+          ? ''
+          : ` · ${only.templateHeld} held to the template`;
+      if (only.mode === 'free') {
+        return `Snapped ${contacts} contacts on ${only.electrode} to the local CT peak · too few contacts for an axis`;
+      }
+      const what =
+        only.mode === 'axis-model' && only.model !== null
+          ? `model ${only.model}`
+          : `measured pitch ${only.pitchMm.toFixed(1)} mm`;
+      return `Snapped ${contacts} contacts on ${only.electrode} along axis · ${what}${held}`;
+    }
+    const modelled = real.filter((r) => r.mode === 'axis-model').length;
+    const mode = modes.size === 1 && modes.has('free') ? 'to the local CT peak' : 'along axis';
+    return (
+      `Snapped ${contacts} contacts on ${real.length} electrodes ${mode}` +
+      (modelled === 0 ? ' · measured pitch' : ` · ${modelled} with a model`)
+    );
+  };
+
+  // ---- the model, and the edits that use it --------------------------------------------------
+
+  /**
+   * Everything the module currently knows about which electrodes these are, in one value.
+   *
+   * Rebuilt per call rather than cached: the table's own `model` column is read off the contacts,
+   * so a cache would be one more thing to invalidate on every edit, and resolving forty-four
+   * catalogue entries against fifteen electrodes is arithmetic nobody can measure.
+   */
+  const modelSources = (): ModelSources => {
+    const table = modelsFromTable(set);
+    const counts = new Map(table.counts);
+    // The site CSV wins over the table's `n_contacts` where both exist: the CSV is the order form,
+    // and a table's per-row count is copied from it by a localiser that may have written only the
+    // rows it found.
+    for (const [group, n] of siteCounts ?? []) counts.set(group, n);
+    return {
+      sidecar: sidecarGeometry,
+      tableModels: table.models,
+      partNumbers: sitePartNumbers,
+      declaredCounts: counts,
+    };
+  };
+
+  const modelOf = (group: string): ElectrodeModel | null =>
+    resolveElectrodeModel(group, modelSources());
+
+  /** Every electrode's model in one pass, so the panel and a `snap` of any scope share one resolution. */
+  const modelsOfAll = (): Map<string, ElectrodeModel | null> => {
+    const sources = modelSources();
+    return new Map(set.groups.map((g) => [g.name, resolveElectrodeModel(g.name, sources)]));
+  };
+
+  /** One electrode's contacts, deepest first — the order every model template is stated in. */
+  const tipFirstContacts = (group: string): Contact[] => {
+    const inGroup = contactsOf(set, group);
+    const spec = set.groups.find((g) => g.name === group);
+    const tip =
+      spec === undefined
+        ? 'low'
+        : resolveTip(
+            spec,
+            inGroup.map((c) => c.position),
+            reference()
+          );
+    return tipFirstOrder(inGroup, tip);
+  };
+
+  /**
+   * The intensity oracle the snap reads the CT through.
+   *
+   * `scene.sampleVolume` when the host has it — one bounded batch read for a whole electrode's
+   * profiles, which is what tells a contact with metal from one without. `null` on an older host,
+   * where the snap still projects `peakCentroid`'s answer onto the axis and simply cannot tell a
+   * missing contact from a present one.
+   */
+  const sampleOracle = (dataset: string): SampleFn | null => {
+    const sample = host.scene.sampleVolume?.bind(host.scene);
+    if (typeof sample !== 'function') return null;
+    return async (points) => {
+      const flat = new Float32Array(points.length * 3);
+      points.forEach((p, i) => {
+        flat[i * 3] = p[0];
+        flat[i * 3 + 1] = p[1];
+        flat[i * 3 + 2] = p[2];
+      });
+      const values = await sample(dataset, flat, { order: 1 });
+      return Array.from(values);
+    };
+  };
+
+  /** What one electrode's extension did. `added` names the contacts it created. */
+  interface ExtendReport {
+    electrode: string;
+    added: string[];
+    expected: number;
+    present: number;
+    skipped: 'no-model' | 'complete' | 'too-few-contacts' | null;
+  }
+
+  /**
+   * Place the contacts a model says are missing, beyond the **entry** end, at the model's spacing.
+   *
+   * The entry end is the one `tipEnd` did *not* pick — the end farther from the head's centre — and
+   * that is where a localiser loses contacts: the deep ones sit in brain and are easy, the shallow
+   * ones sit in the skull's own brightness and are not. Each added contact is `status: 'added'` in
+   * the editlog exactly like one the point tool placed, because that is what it is: a position this
+   * module produced, with no row behind it.
+   *
+   * Numbering continues from the electrode's highest ordinal. It does **not** renumber — the rule
+   * in `shaft.ts` holds here too, and a clinical table's `csc` mapping is not this button's to move.
+   */
+  const doExtend = async (
+    groups: readonly string[],
+    radiusMm: number
+  ): Promise<ExtendReport[]> => {
+    const models = modelsOfAll();
+    const peak: PeakFn =
+      datasetId === null ? () => null : (world, r) => host.scene.peakCentroid(datasetId as string, world, r);
+
+    const reports: ExtendReport[] = [];
+    const created: { group: string; contacts: Contact[] }[] = [];
+    for (const group of groups) {
+      const model = models.get(group) ?? null;
+      const ordered = tipFirstContacts(group);
+      if (model === null) {
+        reports.push({ electrode: group, added: [], expected: 0, present: ordered.length, skipped: 'no-model' });
+        continue;
+      }
+      if (ordered.length >= model.nContacts) {
+        reports.push({
+          electrode: group,
+          added: [],
+          expected: model.nContacts,
+          present: ordered.length,
+          skipped: 'complete',
+        });
+        continue;
+      }
+      const positions = extendAlongAxis({
+        positionsTipFirst: ordered.map((c) => c.position),
+        gapsMm: model.gapsMm,
+        nContacts: model.nContacts,
+        peak,
+        snapRadiusMm: radiusMm,
+      });
+      if (positions === null) {
+        reports.push({
+          electrode: group,
+          added: [],
+          expected: model.nContacts,
+          present: ordered.length,
+          skipped: 'too-few-contacts',
+        });
+        continue;
+      }
+      const highest = ordered.reduce((max, c) => Math.max(max, c.ordinal), 0);
+      const fresh = positions.map((position, k) =>
+        newContact(
+          `x${group}-${highest + k + 1}-${set.contacts.length + k}`,
+          group,
+          highest + k + 1,
+          position,
+          namePad
+        )
+      );
+      created.push({ group, contacts: fresh });
+      reports.push({
+        electrode: group,
+        added: fresh.map((c) => c.name),
+        expected: model.nContacts,
+        present: ordered.length,
+        skipped: null,
+      });
+    }
+
+    if (created.length === 0) return reports;
+    const before = snapshot();
+    set = {
+      groups: set.groups,
+      contacts: [...set.contacts, ...created.flatMap((c) => c.contacts)],
+    };
+    commit(before);
+    return reports;
   };
 
   const doRefit = (group: string): ShaftStats | null => {
@@ -1005,6 +1485,37 @@ export function createModel(host: ModuleHost): SeegModel {
       position: (c.original ?? c.position) as vec3,
     }));
 
+  /**
+   * `model` and `snap_mode` beside each electrode of the editlog — **additive** to
+   * `tetravox.contacts/editlog@1`.
+   *
+   * The schema string does not move, and it does not have to: a reader that knows only the keys the
+   * kit writes is unaffected by two more, and a log written before these existed reads as "no model
+   * was resolved and the snap was free", which is what it was. That is the same rule `renamed`
+   * arrived under.
+   *
+   * They are added **here** rather than in the shared kit because they are facts about a *depth
+   * electrode* — a model is a rod's part number — and the kit serves grids and DBS leads too. Which
+   * is the same reason `shaft.ts` exists.
+   *
+   * `snap_mode` is `'axis'` for an electrode this session's snap put onto its fitted axis,
+   * `'axis-model'` when the manufacturer's gap template regularised those positions, and `'free'`
+   * otherwise — an electrode nothing snapped, or one with too few contacts to fit an axis through,
+   * which keeps the old per-contact centroid snap. The three make different claims about a position
+   * and `snapped: true` alone cannot tell them apart.
+   */
+  const withModelFields = <T extends { electrodes: { name: string }[] }>(log: T): T => {
+    const models = modelsOfAll();
+    return {
+      ...log,
+      electrodes: log.electrodes.map((entry) => ({
+        ...entry,
+        model: models.get(entry.name)?.model ?? null,
+        snap_mode: snapModes.get(entry.name) ?? 'free',
+      })),
+    };
+  };
+
   const writeFiles = async (
     path: string,
     siblings: Record<string, string>
@@ -1020,16 +1531,18 @@ export function createModel(host: ModuleHost): SeegModel {
     const editlogPath = siblings[EDITLOG_TEMPLATE] ?? null;
     let editlog: string | null = null;
     if (editlogPath !== null) {
-      const log = buildEditlog({
-        set,
-        deleted: deletedRecords(),
-        sourceTsv: source?.tsv ?? null,
-        outputTsv: path,
-        backup: written.backupPath,
-        snapRadiusMm,
-        tool: TOOL,
-        operations,
-      });
+      const log = withModelFields(
+        buildEditlog({
+          set,
+          deleted: deletedRecords(),
+          sourceTsv: source?.tsv ?? null,
+          outputTsv: path,
+          backup: written.backupPath,
+          snapRadiusMm,
+          tool: TOOL,
+          operations,
+        })
+      );
       const result = await host.files.writeText(editlogPath, formatEditlog(log), { backup: false });
       if (result.ok) editlog = editlogPath;
       else host.ui.toast('warn', `The table was saved; its editlog was not: ${result.error}`);
@@ -1079,6 +1592,47 @@ export function createModel(host: ModuleHost): SeegModel {
       return !isDirty;
     }
     return answer === 1;
+  };
+
+  /**
+   * The site's electrode list, for its `part_number` column. See {@link SeegModel.loadElectrodeList}.
+   *
+   * It resolves models and nothing else: no contact is moved, added or renamed, so it pushes no
+   * history entry and marks nothing dirty. What it does do is re-notify, because every electrode's
+   * model section may have just gained a name.
+   */
+  const doLoadElectrodeList = async (): Promise<void> => {
+    const paths = await host.files.openDialog('electrodes');
+    const path = paths?.[0];
+    if (path === undefined) return;
+    const text = await host.files.readText(path);
+    if (text === null) {
+      host.ui.toast('error', `Could not read ${baseNameOf(path)}.`);
+      return;
+    }
+    const rows = parseSiteCsv(text);
+    const parts = new Map<string, string>();
+    const counts = new Map<string, number>();
+    for (const [name, row] of rows) {
+      if (row.partNumber !== null) parts.set(name, row.partNumber);
+      if (row.nContacts !== null) counts.set(name, row.nContacts);
+    }
+    if (parts.size === 0) {
+      host.ui.toast(
+        'warn',
+        `${baseNameOf(path)} has no part_number column, so no electrode gained a model from it.`
+      );
+      return;
+    }
+    sitePartNumbers = parts;
+    siteCounts = counts.size === 0 ? null : counts;
+    notify();
+    const resolved = [...modelsOfAll().values()].filter((m) => m !== null).length;
+    host.ui.toast(
+      'info',
+      `${baseNameOf(path)}: ${parts.size} part numbers, ${resolved} of ${set.groups.length} ` +
+        `electrodes now have a model.`
+    );
   };
 
   const doLoadDialog = async (): Promise<void> => {
@@ -1284,6 +1838,10 @@ export function createModel(host: ModuleHost): SeegModel {
       message = null;
       electrode = null;
       selectedId = null;
+      snapNote = null;
+      sidecarGeometry = null;
+      sitePartNumbers = null;
+      siteCounts = null;
       ghost = true;
       wire = true;
       dotRadiusPx = CONTACT_DOT_RADIUS_PX;
@@ -1307,39 +1865,71 @@ export function createModel(host: ModuleHost): SeegModel {
         return;
       }
       case 'snap': {
-        const { moved, meanShiftMm } = doSnap('contact', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('contact', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped 1 contact, ${meanShiftMm.toFixed(2)} mm.`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
         );
         return;
       }
       case 'snap-electrode': {
-        const { moved, meanShiftMm } = doSnap('electrode', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('electrode', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped ${moved} contacts, mean ${meanShiftMm.toFixed(2)} mm.`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
         );
         return;
       }
       case 'snap-all': {
         const answer = await host.ui.confirm(
           'Snap every contact?',
-          `${set.contacts.length} contacts across ${set.groups.length} electrodes will move to the ` +
-            `local CT peak within ${snapRadiusMm} mm. Undo puts them back.`,
+          `${set.contacts.length} contacts across ${set.groups.length} electrodes will move onto the ` +
+            `fitted axis of their own electrode, at the peak of the CT profile along it. Undo puts ` +
+            `them back.`,
           ['Snap all', 'Cancel']
         );
         if (answer !== 0) return;
-        const { moved, meanShiftMm } = doSnap('all', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('all', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped ${moved} contacts, mean ${meanShiftMm.toFixed(2)} mm.`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
+        );
+        return;
+      }
+      case 'extend': {
+        if (electrode === null) return;
+        const model = modelOf(electrode);
+        if (model === null) {
+          host.ui.toast('warn', `No model is resolved for ${electrode}, so there is nothing to extend to.`);
+          return;
+        }
+        const present = contactsOf(set, electrode).length;
+        if (present >= model.nContacts) {
+          host.ui.toast('info', `${electrode} already has all ${model.nContacts} of its contacts.`);
+          return;
+        }
+        // The confirmation is the panel's, not the operation's: this is the one button here that
+        // *adds* rows to a clinical table, and a job author who typed `extend` has already said so.
+        const answer = await host.ui.confirm(
+          `Add ${model.nContacts - present} contacts to ${electrode}?`,
+          `${electrode} has ${present} contacts and a ${model.model} has ${model.nContacts}. The ` +
+            `missing ones are placed beyond the entry end at the model’s spacing and snapped. They ` +
+            `are saved with status “added”. Undo removes them.`,
+          ['Extend', 'Cancel']
+        );
+        if (answer !== 0) return;
+        const [report] = await doExtend([electrode], snapRadiusMm);
+        host.ui.toast(
+          'info',
+          report === undefined || report.added.length === 0
+            ? `Nothing was added to ${electrode}.`
+            : `Added ${report.added.length} contacts to ${electrode}: ${report.added.join(', ')}.`
         );
         return;
       }
@@ -1453,6 +2043,10 @@ export function createModel(host: ModuleHost): SeegModel {
         if (text === null) throw new ModuleHostError(`could not read ${tsv}`);
         const ok = applyTable(tsv, text);
         if (!ok) throw new ModuleHostError(`${baseNameOf(tsv)} is not a usable electrodes table`);
+        // The geometry sidecar, so a headless `snap` has the same sources the panel does. It
+        // is a sibling of the table the job named, which is what puts it on the read allow-list.
+        const beside = bundleOf(await host.files.siblings(tsv));
+        if (beside.geometry !== null) await readGeometrySidecar(beside.geometry);
         // After the CT binds, because {@link showT1} writes the block and `applyTable` is what
         // creates the `source` it writes into. Absent `t1` reports nothing at all, which is what
         // makes the field additive for every job written before it did anything.
@@ -1490,7 +2084,30 @@ export function createModel(host: ModuleHost): SeegModel {
         }
         const radius = args['radiusMm'];
         const radiusMm = typeof radius === 'number' ? clampSnapRadius(radius) : snapRadiusMm;
-        return doSnap(scope, radiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap(scope, radiusMm);
+        return {
+          moved,
+          meanShiftMm,
+          electrodes: reports.map((r) => ({
+            electrode: r.electrode,
+            mode: r.mode,
+            model: r.model,
+            moved: r.moved,
+            meanShiftMm: r.meanShiftMm,
+            pitchMm: r.pitchMm,
+            templateHeld: r.templateHeld,
+            outliers: r.outliers,
+          })),
+        };
+      }
+      case 'extend': {
+        const wanted = args['electrode'];
+        const radius = args['radiusMm'];
+        const radiusMm = typeof radius === 'number' ? clampSnapRadius(radius) : snapRadiusMm;
+        const groups =
+          typeof wanted === 'string' ? [wanted] : set.groups.map((g) => g.name);
+        const reports = await doExtend(groups, radiusMm);
+        return { electrodes: reports };
       }
       case 'refit': {
         const wanted = args['electrode'];
@@ -1632,6 +2249,7 @@ export function createModel(host: ModuleHost): SeegModel {
       const found = await host.files.siblings(path);
       const bundle = bundleOf(found);
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
+      if (bundle.geometry !== null) await readGeometrySidecar(bundle.geometry);
       if (bundle.ct !== null && datasetId === null) {
         message = `Open ${baseNameOf(bundle.ct)} beside this table to edit the contacts on it.`;
         notify();
@@ -1655,6 +2273,7 @@ export function createModel(host: ModuleHost): SeegModel {
         }
       }
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
+      if (bundle.geometry !== null) await readGeometrySidecar(bundle.geometry);
       void anchor;
     },
 
@@ -1747,6 +2366,8 @@ export function createModel(host: ModuleHost): SeegModel {
     jumpTo(id) {
       selectContact(id, true);
     },
+
+    loadElectrodeList: doLoadElectrodeList,
 
     deleteContact(id) {
       doDelete(id);

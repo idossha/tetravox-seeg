@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.1.6',
+  version: '0.2.0',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -46,12 +46,13 @@ export const seegManifest: ModuleManifest = {
   activation: ['onToggle', 'onReader', 'onSibling', 'onSceneBlock'],
   commands: [
     { id: 'add', title: 'Add contacts (place mode)', key: 'a' },
-    { id: 'snap', title: 'Snap selected contact to metal', key: 's', when: 'selection' },
-    { id: 'snap-electrode', title: 'Snap electrode to metal', key: 's', shift: true },
-    { id: 'snap-all', title: 'Snap all electrodes to metal…' },
+    { id: 'snap', title: 'Snap selected contact onto the shaft axis', key: 's', when: 'selection' },
+    { id: 'snap-electrode', title: 'Snap electrode onto its shaft axis', key: 's', shift: true },
+    { id: 'snap-all', title: 'Snap all electrodes onto their shaft axes…' },
     { id: 'next', title: 'Next contact', key: 'n' },
     { id: 'prev', title: 'Previous contact', key: 'p' },
     { id: 'refit', title: 'Re-fit shaft', key: 'f' },
+    { id: 'extend', title: 'Extend along axis to the model’s contact count…' },
     { id: 'renumber', title: 'Renumber tip-first' },
     { id: 'flip-tip', title: 'Flip tip end', key: 't' },
     { id: 'ghost', title: 'Contacts visible through slices', key: 'g' },
@@ -87,6 +88,10 @@ export const seegManifest: ModuleManifest = {
         '../ieeg/{sub}_space-{space}_coordsystem.json',
         '../ieeg/{sub}_space-{space}_electrodes_editlog.json',
         '../../../SimNIBS/{sub}/m2m_{id}/T1.nii.gz',
+        // seegprep's per-electrode geometry sidecar (seegprep PR #2): `model`,
+        // `contact_length_mm` and `spacing_gaps_mm` for this subject's own implant. It carries no
+        // `space` entity, because the geometry of a rod is not a coordinate space.
+        '../ieeg/{sub}_electrodes-geometry.json',
       ],
     },
     {
@@ -95,6 +100,7 @@ export const seegManifest: ModuleManifest = {
         '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz',
         '{sub}_space-{space}_coordsystem.json',
         '{stem}_editlog.json',
+        '{sub}_electrodes-geometry.json',
       ],
     },
   ],
@@ -122,12 +128,17 @@ export const seegManifest: ModuleManifest = {
     // operation reports `{ t1: 'not-open' }` and everything else it did still stands, so a job
     // author learns which file the scene is missing instead of getting contacts over nothing.
     { id: 'load', args: { ct: 'path', tsv: 'path', t1: 'path?' } },
-    // `scope` is contact | electrode | all.
+    // `scope` is contact | electrode | all. Every scope fits the electrode's axis and puts the
+    // contacts on it, using the manufacturer's gaps where a model resolved; the result says per
+    // electrode which mode ran (`axis` or `axis-model`).
     {
       id: 'snap',
       args: { scope: 'string', electrode: 'string?', contact: 'string?', radiusMm: 'number?' },
     },
     { id: 'refit', args: { electrode: 'string?' } },
+    // `extend` is the one operation here that *adds* contacts, so it is deliberately not folded
+    // into `snap`: a batch that wanted a shaft completed has to say so.
+    { id: 'extend', args: { electrode: 'string?', radiusMm: 'number?' } },
     { id: 'renumber', args: { electrode: 'string?' } },
     { id: 'ghost', args: { on: 'boolean' } },
     // Appended 2026-08-30 beside `ghost`, and for the same reason it exists: which of a contact
