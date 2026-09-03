@@ -110,8 +110,8 @@ Requires Tetravox 0.3.5 or newer: the QC exports and the axis snap use host capa
 - **Vendors a newer `@tetravox/module-sdk`** (`1.0.0-core.0.3.4`, tracking Tetravox PR #18's host
   API additions — `scene.sampleVolume`, `files.writeBinary`, `.svg`/`.html` in `writeText`,
   `capture.screenshot`, and `{derivatives}` manifest sibling templates). Pinned as
-  `vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz`; this moves to the official
-  `1.0.0-core.0.3.5` tarball once Tetravox cuts that release.
+  `vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz` at the time; a later chore moved the pin to the
+  official `1.0.0-core.0.3.5` tarball once Tetravox cut that release.
 - **Fix: QC export no longer silently writes nothing outside a derivatives tree.** A table opened
   from a plain folder — not inside a resolvable BIDS derivatives tree, and with no `Save as…`
   override already chosen — made every requested figure report `'no-derivatives'`, so the sheet
