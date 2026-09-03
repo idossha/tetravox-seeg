@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 — 2026-09-02
+
+- **The editlog names the version that actually wrote it.** `tool` is derived from the manifest
+  instead of a hand-maintained literal, which had read `Tetravox sEEG contacts 0.1.0` in every
+  release from 0.1.0 through 0.1.5 — so the one field whose job is to record which build produced an
+  edit could not tell those six apart. `seegprep` reads it. Nothing about an existing editlog
+  changes; the next save is the first one to be accurate.
+- The manifest's version and `package.json`'s are now **held equal by a test**. They are two
+  hand-bumped copies of one number and nothing compared them: the shipped `dist/manifest.json` comes
+  from the manifest, so a release that bumped only one would publish an asset disagreeing with its
+  own tag.
+
 ## 0.1.5 — 2026-09-02
 
 - **A drag now shows a guide**: while a contact is held, the layer draws the electrode's fitted
