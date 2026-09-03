@@ -46,17 +46,16 @@ export const seegManifest: ModuleManifest = {
   activation: ['onToggle', 'onReader', 'onSibling', 'onSceneBlock'],
   commands: [
     { id: 'add', title: 'Add contacts (place mode)', key: 'a' },
-    { id: 'snap', title: 'Snap selected contact to metal', key: 's', when: 'selection' },
-    { id: 'snap-electrode', title: 'Snap electrode to metal', key: 's', shift: true },
-    { id: 'snap-all', title: 'Snap all electrodes to metal…' },
+    { id: 'snap', title: 'Snap selected contact onto the shaft axis', key: 's', when: 'selection' },
+    { id: 'snap-electrode', title: 'Snap electrode onto its shaft axis', key: 's', shift: true },
+    { id: 'snap-all', title: 'Snap all electrodes onto their shaft axes…' },
     { id: 'next', title: 'Next contact', key: 'n' },
     { id: 'prev', title: 'Previous contact', key: 'p' },
     { id: 'refit', title: 'Re-fit shaft', key: 'f' },
-    // Appended 0.2.0, beside Re-fit and keyed as its shifted twin because it is the same gesture
-    // with the manufacturer's geometry instead of the shaft's own median gap. `m` is not in §13.5's
-    // pool; `Shift+f` is the pool key this module already owns unshifted.
-    { id: 'snap-model', title: 'Snap electrode to its model', key: 'f', shift: true },
-    { id: 'snap-model-all', title: 'Snap every electrode to its model…' },
+    // There is no `snap-model` command. 0.2.0 briefly had one (`⇧F`) beside these three, and it was
+    // a second kind of snap the user had to choose between; the ordinary Snap now does what it did
+    // — fit the axis, use the manufacturer's gaps when the model resolved — so a key that meant
+    // "this time, do it properly" had nothing left to mean. The panel says which mode ran.
     { id: 'extend', title: 'Extend along axis to the model’s contact count…' },
     { id: 'renumber', title: 'Renumber tip-first' },
     { id: 'flip-tip', title: 'Flip tip end', key: 't' },
@@ -133,20 +132,19 @@ export const seegManifest: ModuleManifest = {
     // operation reports `{ t1: 'not-open' }` and everything else it did still stands, so a job
     // author learns which file the scene is missing instead of getting contacts over nothing.
     { id: 'load', args: { ct: 'path', tsv: 'path', t1: 'path?' } },
-    // `scope` is contact | electrode | all.
+    // `scope` is contact | electrode | all, and it decides which contacts *move* — never how they
+    // are placed. Every scope fits the electrode's axis and puts the contacts on it, using the
+    // manufacturer's gaps where a model resolved; the result says per electrode which mode ran, so
+    // a job learns whether it got `axis` or `axis-model` without a second operation to ask for it.
+    // There was a `snap-model` operation in 0.2.0's development, and it is **removed** rather than
+    // deprecated: 0.2.0 is unreleased, so no job file can be relying on it.
     {
       id: 'snap',
       args: { scope: 'string', electrode: 'string?', contact: 'string?', radiusMm: 'number?' },
     },
     { id: 'refit', args: { electrode: 'string?' } },
-    // The catalogue-aware pair, appended 0.2.0. `electrode` absent means every electrode that has a
-    // resolved model — the shape `refit`, `renumber` and `flip-tip` already read — and an electrode
-    // with no model is skipped rather than re-spaced at its median gap behind the job author's
-    // back: a job that asked to snap to a model and got an even re-spacing instead would be told
-    // nothing. The result names which electrodes were skipped and why.
-    { id: 'snap-model', args: { electrode: 'string?', radiusMm: 'number?' } },
     // `extend` is the one operation here that *adds* contacts, so it is deliberately not folded
-    // into `snap-model`: a batch that wanted a shaft completed has to say so.
+    // into `snap`: a batch that wanted a shaft completed has to say so.
     { id: 'extend', args: { electrode: 'string?', radiusMm: 'number?' } },
     { id: 'renumber', args: { electrode: 'string?' } },
     { id: 'ghost', args: { on: 'boolean' } },

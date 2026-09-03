@@ -2,15 +2,42 @@
 
 ## 0.2.0 — 2026-09-03
 
-- **The editor now knows which electrode it is looking at, and snaps to it.** A new model section in
-  the panel names the electrode's model, says where that came from, shows how many contacts it should
-  have against how many it has, and prints every gap three ways: the measured 3-D distance, what the
-  manufacturer says it is, and the difference — flagged when it is more than 0.75 mm out. **Snap to
-  model** (`⇧F`, or **Snap all to model…**) fits a line through the shaft, rejects one contact that is
-  off it, slides the manufacturer's gap template along the rod until it sits on the brightest metal,
-  and then moves each contact onto its local peak — refusing any peak that lands more than 1 mm off
-  the rod, because that is usually the *neighbouring* electrode. The whole thing is one undo step and
-  it never renumbers.
+- **Snap now puts a contact on its electrode's shaft, not beside it.** A depth electrode is one rigid
+  rod, so its contacts are collinear by construction — and until now every contact snapped to its own
+  blob's intensity-weighted centroid, independently of its neighbours. On P073 that made the contacts
+  **zigzag 0.3–0.7 mm around the straight trajectory line** the drag guide draws, because CT bloom is
+  not symmetric about the rod: a neighbouring shaft, a bright skull edge or an anisotropic voxel pulls
+  each centroid a different way. There is one snap now, for every scope (`s`, `⇧S`, **Snap all…**),
+  with a model or without one:
+  - the electrode's axis is fitted through all its contacts, rejecting one that is off the line;
+  - each contact goes to the peak of the 1-D CT profile **along that axis** — a 1 mm tube, sampled
+    every 0.1 mm through ±0.45 × the shaft's pitch, with parabolic sub-sample refinement, so the
+    position is not quantised to the sampling step;
+  - the axis is then re-fitted to where the metal actually is (an intensity-weighted disc centroid at
+    each contact) and the profiles are taken again. **That is the only lateral freedom there is, and
+    it belongs to the whole electrode.** No contact carries a sideways offset of its own, so every
+    snapped contact lies exactly on the line — the same line the drag guide draws;
+  - and where the model resolved, the manufacturer's gap template is slid onto the brightest metal and
+    each contact takes the profile peak *nearest* its template position, keeping the template outright
+    when the nearest peak is more than 0.35 × the local gap away. Without a model the measured median
+    pitch sizes the search **window** and nothing else — an observed median is not a datasheet and
+    never re-spaces a shaft.
+  - The panel prints which ran: `snapped along axis · model BF10R-SP21X`, or `· measured pitch
+    5.0 mm`. On a host without `scene.sampleVolume` the snap reads `peakCentroid` and **projects its
+    answer onto the axis**, keeping which blob and where along it and discarding the sideways part.
+    An electrode with fewer than three contacts has no rod to fit and keeps the old per-contact
+    centroid snap.
+- **The separate Snap to model is gone**, and with it the `⇧F` key, the **Snap all to model…** button
+  and the `snap-model` operation. A model changes what the ordinary Snap *does* rather than offering a
+  second kind of snap to choose between, and a button labelled "this time, do it properly" was a
+  question the user should never have been asked. Removed rather than deprecated: 0.2.0 is unreleased,
+  so no job file can be relying on it. The `snap` operation's arguments are unchanged, and its result
+  now names, per electrode, the mode that ran (`axis` or `axis-model`), the model, the pitch, and how
+  many contacts held a template position.
+- **The editor knows which electrode it is looking at.** A model section in the panel names the
+  electrode's model, says where that came from, shows how many contacts it should have against how
+  many it has, and prints every gap three ways: the measured 3-D distance, what the manufacturer says
+  it is, and the difference — flagged when it is more than 0.75 mm out.
   - Why it matters: an Ad-Tech Behnke-Fried lead is **3.0 mm** between contacts 1 and 2 and **5.5 mm**
     from there out. Re-fit, which re-spaces at the shaft's own median gap, turns that into a uniform
     5.5 mm and leaves contact 2 two and a half millimetres off the metal it is inside — with every
@@ -24,8 +51,8 @@
   `sub-<id>_electrodes-geometry.json` sidecar where it names a model, then a gap table for 44 electrode models bundled from
   `seegprep`'s own catalogue and keyed by the table's `model` column or a site part number
   (`BF10R-SP21X-0C3` finds `BF10R-SP21X`), then **nothing** — and nothing is a supported state, not a
-  failure. With no model resolved the module behaves exactly as it did before: Re-fit re-spaces at the
-  observed median gap, and the panel says so instead of pretending.
+  failure. With no model resolved Snap still puts the contacts on the axis; only the template
+  regularisation is absent, and the panel says so instead of pretending.
   - seegprep's sidecar always states a spacing, and writes `model: "n/a"` with the shaft's own
     measured median pitch repeated when *its* catalogue matched nothing. That is read as **no model**
     — the table's `model` column may still hold a real one, which seegprep never saw — and if nothing
@@ -39,14 +66,12 @@
 - **The drag guide states the model distance beside the measured one.** Dragging a contact on an
   electrode with a model now reads `4.9 / 5.0 mm` — where it is, and where it is being aimed. Both are
   3-D distances, like every distance this module prints.
-- The editlog records **`model`** and **`snap_mode`** (`free` or `model`) beside each electrode —
-  additive to `tetravox.contacts/editlog@1`, so a reader that knows only the old keys is unaffected
-  and a log written before these existed reads as "no model, free snap", which is what it was. Two
-  kinds of move make different claims about a position, and `snapped: true` alone could not tell them
+- The editlog records **`model`** and **`snap_mode`** beside each electrode — additive to
+  `tetravox.contacts/editlog@1`, so a reader that knows only the old keys is unaffected. `snap_mode`
+  is `axis`, `axis-model`, or `free` for an electrode nothing snapped or one too short to fit an axis
+  through. Those make different claims about a position, and `snapped: true` alone could not tell them
   apart.
-- `snap-model` and `extend` are job-file operations, so a batch has both. `snap-model` with no
-  `electrode` does every electrode that has a model and **reports** the ones it skipped rather than
-  quietly re-spacing them.
+- `extend` is a job-file operation, so a batch has it too.
 
 ## 0.1.6 — 2026-09-02
 

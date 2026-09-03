@@ -52,7 +52,6 @@ import type { DragGuide } from './dragguide';
 import { dragGuide } from './dragguide';
 import type {
   ElectrodeModel,
-  GapResidual,
   GeometrySidecarEntry,
   ModelSource,
   ModelSources,
@@ -60,12 +59,13 @@ import type {
   SampleFn,
 } from './modelsnap';
 import {
+  AXIS_SNAP_MIN_CONTACTS,
   extendAlongAxis,
   gapResiduals,
   modelsFromTable,
   parseGeometrySidecar,
   parseSiteCsv,
-  planModelSnap,
+  planAxisSnap,
   resolveElectrodeModel,
 } from './modelsnap';
 import { seegManifest } from './manifest';
@@ -102,7 +102,6 @@ const {
   CONTACT_LAYER_STYLE,
   ContactTableError,
   SNAP_RADIUS_DEFAULT_MM,
-  applySnap,
   buildEditlog,
   clampDotRadius,
   clampSnapRadius,
@@ -242,6 +241,14 @@ export interface SeegView {
   modelledElectrodes: number;
   /** Where the module found geometry at all, for the section's one-line provenance. */
   modelSource: ModelSource | 'none';
+  /**
+   * What the last snap did, in one sentence, or `null` before one has run.
+   *
+   * There is exactly one Snap now, and it behaves differently depending on whether the electrode's
+   * model resolved — so the panel has to say which happened. Nothing else in the view can: the
+   * contacts look the same either way.
+   */
+  snapNote: string | null;
   tipName: string | null;
   /** The selected electrode's shaft sketch, or `null` when nothing is selected. */
   diagram: ShaftDiagram | null;
@@ -338,6 +345,8 @@ export function createModel(host: ModuleHost): SeegModel {
   let banner: string | null = null;
   let warning: string | null = null;
   let message: string | null = null;
+  /** The one line the panel prints about the last snap: which mode ran, and what it was aimed at. */
+  let snapNote: string | null = null;
   let busy = false;
   let layerId: LayerId | null = null;
   let datasetId: string | null = null;
@@ -360,14 +369,17 @@ export function createModel(host: ModuleHost): SeegModel {
     snapped: new Set<string>(),
   };
   /**
-   * How each electrode was last snapped — `'model'` once a snap-to-model has run on it.
+   * How each electrode was last snapped, for the editlog beside `snapped`.
    *
-   * Recorded per electrode and written into the editlog beside `snapped`, because "this contact was
-   * moved to the local CT peak" and "this contact was moved onto a BF10R-SP21X's grid and then to
-   * the peak, unless the peak was off the rod" are two different claims about a position, and the
-   * sidecar is a contract with `seegprep` rather than a note to ourselves.
+   * `'axis'` is the snap every scope now runs: the contacts were put **on** the electrode's fitted
+   * axis, at the peak of their own 1-D intensity profile along it. `'axis-model'` is the same with
+   * the manufacturer's gap template regularising those positions. `'free'` is the per-contact
+   * centroid snap, which survives only for a shaft with fewer than three contacts — too few to fit
+   * an axis through. The three make different claims about a position and `snapped: true` alone
+   * cannot tell them apart, and the sidecar is a contract with `seegprep` rather than a note to
+   * ourselves.
    */
-  const snapModes = new Map<string, 'free' | 'model'>();
+  const snapModes = new Map<string, 'free' | 'axis' | 'axis-model'>();
   /** seegprep's `_electrodes-geometry.json` for the open subject, by electrode. */
   let sidecarGeometry: Map<string, GeometrySidecarEntry> | null = null;
   /** The site CSV's `part_number` and `n_contacts`, by electrode, when one has been opened. */
@@ -391,6 +403,7 @@ export function createModel(host: ModuleHost): SeegModel {
     // The snap *mode* is keyed by electrode name for the same reason and goes with them: sub-02's
     // LHIP is not sub-01's, and an editlog claiming a model snap that never ran on this table would
     // be the sidecar lying about the thing it exists to record.
+    snapNote = null;
     snapModes.clear();
   };
 
@@ -950,6 +963,7 @@ export function createModel(host: ModuleHost): SeegModel {
       modelSource:
         modelView?.source ??
         ([...models.values()].find((m) => m !== null)?.source ?? 'none'),
+      snapNote,
       tipName: rows.find((r) => r.tip)?.name ?? null,
       diagram:
         electrode === null
@@ -1005,30 +1019,176 @@ export function createModel(host: ModuleHost): SeegModel {
     return selectedId === null ? [] : [selectedId];
   };
 
-  const doSnap = (
+  /** What one electrode's snap did, for the toast, the panel's line and the editlog. */
+  interface SnapReport {
+    electrode: string;
+    mode: 'axis' | 'axis-model' | 'free';
+    /** The model whose gaps regularised it, when one did. */
+    model: string | null;
+    moved: number;
+    meanShiftMm: number;
+    /** The measured median pitch the search window was sized from. */
+    pitchMm: number;
+    /** How many contacts held the template position because no profile peak near it was acceptable. */
+    templateHeld: number;
+    outliers: number;
+  }
+
+  /**
+   * **The** snap — every scope, every host, model or no model.
+   *
+   * The scope decides which contacts *move*; it never decides how they are placed. Even a
+   * single-contact snap fits the whole electrode's axis and puts that contact on it, because the
+   * electrode is one rigid rod and a contact's lateral position is not its own property (see
+   * `planAxisSnap`). What used to happen instead — each contact to its own blob's intensity centroid
+   * — made the contacts zigzag ±0.3–0.7 mm around the very axis the drag guide draws.
+   *
+   * An electrode with fewer than {@link AXIS_SNAP_MIN_CONTACTS} contacts has no axis worth fitting,
+   * and only that electrode falls back to the old per-contact centroid snap. Whatever the scope, the
+   * whole thing is **one** history entry.
+   */
+  const doSnap = async (
     scope: 'contact' | 'electrode' | 'all',
     radiusMm: number
-  ): { moved: number; meanShiftMm: number } => {
+  ): Promise<{ moved: number; meanShiftMm: number; reports: SnapReport[] }> => {
     if (datasetId === null) throw new ModuleHostError('no CT is loaded to snap against');
     const ids = idsForScope(scope);
-    if (ids.length === 0) return { moved: 0, meanShiftMm: 0 };
+    if (ids.length === 0) return { moved: 0, meanShiftMm: 0, reports: [] };
     const dataset = datasetId;
-    const before = snapshot();
-    const result = snapContacts(set, ids, radiusMm, (world, r) =>
-      host.scene.peakCentroid(dataset, world, r)
-    );
-    if (result.moved === 0) return { moved: 0, meanShiftMm: 0 };
-    set = applySnap(set, result);
-    for (const id of ids) {
-      const contact = set.contacts.find((c) => c.id === id);
-      if (contact !== undefined) operations.snapped.add(contact.group);
+    const wanted = new Set(ids);
+    const peak: PeakFn = (world, r) => host.scene.peakCentroid(dataset, world, r);
+    const sample = sampleOracle(dataset);
+    const models = modelsOfAll();
+
+    const groups = [...new Set(set.contacts.filter((c) => wanted.has(c.id)).map((c) => c.group))];
+    const moves = new Map<string, vec3>();
+    const reports: SnapReport[] = [];
+    const perContact: string[] = [];
+    let total = 0;
+    let moved = 0;
+
+    for (const group of groups) {
+      const ordered = tipFirstContacts(group);
+      const mine = ordered.filter((c) => wanted.has(c.id));
+      const model = models.get(group) ?? null;
+      const plan =
+        ordered.length < AXIS_SNAP_MIN_CONTACTS
+          ? null
+          : await planAxisSnap({
+              positionsTipFirst: ordered.map((c) => c.position),
+              gapsMm: model?.gapsMm ?? null,
+              sample,
+              peak,
+              snapRadiusMm: radiusMm,
+            });
+      if (plan === null) {
+        perContact.push(...mine.map((c) => c.id));
+        continue;
+      }
+      let shift = 0;
+      let count = 0;
+      ordered.forEach((contact, index) => {
+        if (!wanted.has(contact.id)) return;
+        const position = plan.positions[index] as vec3;
+        shift += distanceMm(contact.position, position);
+        count += 1;
+        moves.set(contact.id, position);
+      });
+      total += shift;
+      moved += count;
+      reports.push({
+        electrode: group,
+        mode: plan.mode,
+        model: plan.mode === 'axis-model' ? (model?.model ?? null) : null,
+        moved: count,
+        meanShiftMm: count === 0 ? 0 : shift / count,
+        pitchMm: plan.pitchMm,
+        templateHeld: plan.templateHeld,
+        outliers: plan.outliers,
+      });
     }
+
+    // The short-shaft fallback: two contacts define a line but not a rod, so those keep the snap
+    // this module has always had — the local intensity centroid, wherever it is.
+    if (perContact.length > 0) {
+      const free = snapContacts(set, perContact, radiusMm, peak);
+      for (const [id, position] of free.positions) moves.set(id, position);
+      total += free.meanShiftMm * free.moved;
+      moved += free.moved;
+      for (const group of new Set(
+        set.contacts.filter((c) => free.positions.has(c.id)).map((c) => c.group)
+      )) {
+        reports.push({
+          electrode: group,
+          mode: 'free',
+          model: null,
+          moved: [...free.positions.keys()].filter(
+            (id) => set.contacts.find((c) => c.id === id)?.group === group
+          ).length,
+          meanShiftMm: free.meanShiftMm,
+          pitchMm: 0,
+          templateHeld: 0,
+          outliers: 0,
+        });
+      }
+    }
+
+    if (moves.size === 0) return { moved: 0, meanShiftMm: 0, reports };
+    const before = snapshot();
+    set = {
+      groups: set.groups,
+      contacts: set.contacts.map((contact) => {
+        const position = moves.get(contact.id);
+        return position === undefined ? contact : { ...contact, position };
+      }),
+    };
+    for (const report of reports) {
+      if (report.moved === 0) continue;
+      operations.snapped.add(report.electrode);
+      snapModes.set(report.electrode, report.mode);
+    }
+    snapNote = snapLine(reports);
     commit(before);
-    return { moved: result.moved, meanShiftMm: result.meanShiftMm };
+    return { moved, meanShiftMm: moved === 0 ? 0 : total / moved, reports };
   };
 
+  /**
+   * The one line the panel prints after a snap: which mode ran, and what it was aimed at.
+   *
+   * A user cannot tell "on the axis, regularised by a BF10R-SP21X" from "on the axis, window sized
+   * by the measured 5.0 mm pitch" by looking at the contacts, and the two make different claims. The
+   * separate **Snap to model** button used to be how you knew; there is one snap now, so the readout
+   * is how you know.
+   */
+  const snapLine = (reports: readonly SnapReport[]): string | null => {
+    const real = reports.filter((r) => r.moved > 0);
+    if (real.length === 0) return null;
+    const modes = new Set(real.map((r) => r.mode));
+    const contacts = real.reduce((n, r) => n + r.moved, 0);
+    if (real.length === 1) {
+      const only = real[0] as SnapReport;
+      const held =
+        only.templateHeld === 0
+          ? ''
+          : ` · ${only.templateHeld} held to the template`;
+      if (only.mode === 'free') {
+        return `Snapped ${contacts} contacts on ${only.electrode} to the local CT peak · too few contacts for an axis`;
+      }
+      const what =
+        only.mode === 'axis-model' && only.model !== null
+          ? `model ${only.model}`
+          : `measured pitch ${only.pitchMm.toFixed(1)} mm`;
+      return `Snapped ${contacts} contacts on ${only.electrode} along axis · ${what}${held}`;
+    }
+    const modelled = real.filter((r) => r.mode === 'axis-model').length;
+    const mode = modes.size === 1 && modes.has('free') ? 'to the local CT peak' : 'along axis';
+    return (
+      `Snapped ${contacts} contacts on ${real.length} electrodes ${mode}` +
+      (modelled === 0 ? ' · measured pitch' : ` · ${modelled} with a model`)
+    );
+  };
 
-  // ---- the model, and the two edits that use it --------------------------------------------------
+  // ---- the model, and the edits that use it --------------------------------------------------
 
   /**
    * Everything the module currently knows about which electrodes these are, in one value.
@@ -1055,7 +1215,7 @@ export function createModel(host: ModuleHost): SeegModel {
   const modelOf = (group: string): ElectrodeModel | null =>
     resolveElectrodeModel(group, modelSources());
 
-  /** Every electrode's model in one pass, so the panel and `snap-model-all` share one resolution. */
+  /** Every electrode's model in one pass, so the panel and a `snap` of any scope share one resolution. */
   const modelsOfAll = (): Map<string, ElectrodeModel | null> => {
     const sources = modelSources();
     return new Map(set.groups.map((g) => [g.name, resolveElectrodeModel(g.name, sources)]));
@@ -1077,14 +1237,13 @@ export function createModel(host: ModuleHost): SeegModel {
   };
 
   /**
-   * The intensity oracle the template slide scores against.
+   * The intensity oracle the snap reads the CT through.
    *
-   * `scene.sampleVolume` when the host has it — one bounded batch read per search pass, which is
-   * what makes a 0.25 mm slide affordable. Older hosts have only `peakCentroid`, and the fallback
-   * is deliberately a *different* measurement rather than a worse version of the same one: "is
-   * there metal within a millimetre of this point, and how close" scores a template that lies on
-   * the rod above one that does not, which is the only thing the slide needs it to do. It costs one
-   * host call per point, so {@link modelSnapOptions} drops the tube for it.
+   * `scene.sampleVolume` when the host has it — one bounded batch read for a whole electrode's
+   * profiles, which is what makes a 0.1 mm search along the axis affordable at all. `null` on an
+   * older host, and `planAxisSnap` then falls back to `peakCentroid` **projected onto the axis**:
+   * that keeps the part of the answer the hardware allows (which blob, and where along it) and
+   * discards the sideways part, which is the whole point of this snap.
    */
   const sampleOracle = (dataset: string): SampleFn | null => {
     const sample = host.scene.sampleVolume?.bind(host.scene);
@@ -1099,140 +1258,6 @@ export function createModel(host: ModuleHost): SeegModel {
       const values = await sample(dataset, flat, { order: 1 });
       return Array.from(values);
     };
-  };
-
-  const probeOracle = (dataset: string, radiusMm: number): SampleFn => {
-    return (points) =>
-      Promise.resolve(
-        points.map((p) => {
-          const found = host.scene.peakCentroid(dataset, p, radiusMm);
-          // `NaN`, not 0, for "nothing here": `slideTemplate` treats a non-finite value as a point
-          // it has no answer for, and a candidate mostly outside the volume then scores nothing at
-          // all rather than scoring a confident zero.
-          return found === null ? Number.NaN : 1 / (1 + distanceMm(p, found));
-        })
-      );
-  };
-
-  /** The tube is only affordable on `sampleVolume`; the probe path samples the axis alone. */
-  const modelSnapOptions = (hasSampleVolume: boolean): { spokes?: number } =>
-    hasSampleVolume ? {} : { spokes: 0 };
-
-  /** What one electrode's snap-to-model did, or why it did nothing. */
-  interface ModelSnapReport {
-    electrode: string;
-    model: string | null;
-    source: ModelSource | null;
-    moved: number;
-    meanShiftMm: number;
-    /** How many peaks were refused for landing more than 1 mm off the fitted axis. */
-    offAxisRejected: number;
-    /** How many contacts the fit's one rejection pass dropped before fitting the axis. */
-    outliers: number;
-    flagged: number;
-    residuals: GapResidual[];
-    skipped: 'no-model' | 'too-few-contacts' | 'no-signal' | null;
-  }
-
-  const emptyReport = (
-    electrode: string,
-    skipped: ModelSnapReport['skipped']
-  ): ModelSnapReport => ({
-    electrode,
-    model: null,
-    source: null,
-    moved: 0,
-    meanShiftMm: 0,
-    offAxisRejected: 0,
-    outliers: 0,
-    flagged: 0,
-    residuals: [],
-    skipped,
-  });
-
-  /**
-   * Snap the named electrodes onto their models — **one** history entry however many there were.
-   *
-   * The planning is asynchronous (a `sampleVolume` is a promise) and the applying is not, which is
-   * exactly why the snapshot is taken after every plan is in hand: a snapshot taken before the
-   * awaits would restore a set the user may have dragged in the meantime.
-   *
-   * An electrode with no model is **skipped, not re-spaced**. Falling back to the median gap here
-   * would be a button labelled "snap to model" doing something else, and the report says which
-   * electrodes were left alone so a job author and a panel can both say so.
-   */
-  const doModelSnap = async (
-    groups: readonly string[],
-    radiusMm: number
-  ): Promise<ModelSnapReport[]> => {
-    if (datasetId === null) throw new ModuleHostError('no CT is loaded to snap against');
-    const dataset = datasetId;
-    const models = modelsOfAll();
-    const fromVolume = sampleOracle(dataset);
-    const sample = fromVolume ?? probeOracle(dataset, radiusMm);
-    const peak: PeakFn = (world, r) => host.scene.peakCentroid(dataset, world, r);
-
-    const reports: ModelSnapReport[] = [];
-    const moves = new Map<string, vec3>();
-    for (const group of groups) {
-      const model = models.get(group) ?? null;
-      if (model === null) {
-        reports.push(emptyReport(group, 'no-model'));
-        continue;
-      }
-      const ordered = tipFirstContacts(group);
-      if (ordered.length < 2) {
-        reports.push(emptyReport(group, 'too-few-contacts'));
-        continue;
-      }
-      const plan = await planModelSnap({
-        positionsTipFirst: ordered.map((c) => c.position),
-        gapsMm: model.gapsMm,
-        sample,
-        peak,
-        snapRadiusMm: radiusMm,
-        options: modelSnapOptions(fromVolume !== null),
-      });
-      if (plan === null) {
-        reports.push({ ...emptyReport(group, 'no-signal'), model: model.model, source: model.source });
-        continue;
-      }
-      let shift = 0;
-      ordered.forEach((contact, index) => {
-        const position = plan.positions[index] as vec3;
-        shift += distanceMm(contact.position, position);
-        moves.set(contact.id, position);
-      });
-      reports.push({
-        electrode: group,
-        model: model.model,
-        source: model.source,
-        moved: ordered.length,
-        meanShiftMm: shift / ordered.length,
-        offAxisRejected: plan.offAxisRejected,
-        outliers: plan.outliers,
-        flagged: plan.residuals.filter((r) => r.flagged).length,
-        residuals: plan.residuals,
-        skipped: null,
-      });
-    }
-
-    if (moves.size === 0) return reports;
-    const before = snapshot();
-    set = {
-      groups: set.groups,
-      contacts: set.contacts.map((contact) => {
-        const position = moves.get(contact.id);
-        return position === undefined ? contact : { ...contact, position };
-      }),
-    };
-    for (const report of reports) {
-      if (report.skipped !== null) continue;
-      operations.snapped.add(report.electrode);
-      snapModes.set(report.electrode, 'model');
-    }
-    commit(before);
-    return reports;
   };
 
   /** What one electrode's extension did. `added` names the contacts it created. */
@@ -1328,40 +1353,6 @@ export function createModel(host: ModuleHost): SeegModel {
     };
     commit(before);
     return reports;
-  };
-
-  /** One electrode's snap-to-model in one sentence — the whole story goes to the panel's table. */
-  const modelSnapToast = (report: ModelSnapReport | null, asked: number): string => {
-    if (report === null) return 'Nothing to snap.';
-    switch (report.skipped) {
-      case 'no-model':
-        return (
-          `No model is resolved for ${report.electrode}: there is no geometry sidecar entry, and ` +
-          `no model column or part number the catalogue recognises. Re-fit (f) re-spaces at the ` +
-          `observed median gap instead.`
-        );
-      case 'too-few-contacts':
-        return `${report.electrode} needs two contacts before a model template can be fitted to it.`;
-      case 'no-signal':
-        return `${report.electrode}: the CT had nothing to score the ${report.model} template against.`;
-      default: {
-        const off =
-          report.offAxisRejected === 0
-            ? ''
-            : ` ${report.offAxisRejected} peaks were off the rod and refused.`;
-        const flags =
-          report.flagged === 0 ? '' : ` ${report.flagged} gaps are off by more than 0.75 mm.`;
-        const what =
-          report.source === 'sidecar-measured'
-            ? 'its own measured spacing'
-            : (report.model ?? 'its model');
-        return (
-          `Snapped ${report.moved} contacts on ${report.electrode} to ${what}, mean ` +
-          `${report.meanShiftMm.toFixed(2)} mm.${off}${flags}` +
-          (asked > 1 ? '' : '')
-        );
-      }
-    }
   };
 
   const doRefit = (group: string): ShaftStats | null => {
@@ -1511,9 +1502,11 @@ export function createModel(host: ModuleHost): SeegModel {
    * electrode* — a model is a rod's part number — and the kit serves grids and DBS leads too. Which
    * is the same reason `shaft.ts` exists.
    *
-   * `snap_mode` is `'model'` for an electrode a snap-to-model ran on in this session and `'free'`
-   * otherwise, including for an electrode snapped only by the plain radius snap: the two moves make
-   * different claims about a position, and `snapped: true` alone cannot tell them apart.
+   * `snap_mode` is `'axis'` for an electrode this session's snap put onto its fitted axis,
+   * `'axis-model'` when the manufacturer's gap template regularised those positions, and `'free'`
+   * otherwise — an electrode nothing snapped, or one with too few contacts to fit an axis through,
+   * which keeps the old per-contact centroid snap. The three make different claims about a position
+   * and `snapped: true` alone cannot tell them apart.
    */
   const withModelFields = <T extends { electrodes: { name: string }[] }>(log: T): T => {
     const models = modelsOfAll();
@@ -1849,6 +1842,7 @@ export function createModel(host: ModuleHost): SeegModel {
       message = null;
       electrode = null;
       selectedId = null;
+      snapNote = null;
       sidecarGeometry = null;
       sitePartNumbers = null;
       siteCounts = null;
@@ -1875,80 +1869,40 @@ export function createModel(host: ModuleHost): SeegModel {
         return;
       }
       case 'snap': {
-        const { moved, meanShiftMm } = doSnap('contact', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('contact', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped 1 contact, ${meanShiftMm.toFixed(2)} mm.`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
         );
         return;
       }
       case 'snap-electrode': {
-        const { moved, meanShiftMm } = doSnap('electrode', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('electrode', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped ${moved} contacts, mean ${meanShiftMm.toFixed(2)} mm.`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
         );
         return;
       }
       case 'snap-all': {
         const answer = await host.ui.confirm(
           'Snap every contact?',
-          `${set.contacts.length} contacts across ${set.groups.length} electrodes will move to the ` +
-            `local CT peak within ${snapRadiusMm} mm. Undo puts them back.`,
+          `${set.contacts.length} contacts across ${set.groups.length} electrodes will move onto the ` +
+            `fitted axis of their own electrode, at the peak of the CT profile along it. Undo puts ` +
+            `them back.`,
           ['Snap all', 'Cancel']
         );
         if (answer !== 0) return;
-        const { moved, meanShiftMm } = doSnap('all', snapRadiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap('all', snapRadiusMm);
         host.ui.toast(
           'info',
           moved === 0
             ? 'No metal within the snap radius.'
-            : `Snapped ${moved} contacts, mean ${meanShiftMm.toFixed(2)} mm.`
-        );
-        return;
-      }
-      // The catalogue-aware pair (0.2.0). Both report their per-gap residuals through the panel's
-      // model section rather than through the toast: eleven numbers do not fit in a toast, and the
-      // section is where the user is already looking when they press these.
-      case 'snap-model': {
-        if (electrode === null) return;
-        const [report] = await doModelSnap([electrode], snapRadiusMm);
-        host.ui.toast('info', modelSnapToast(report ?? null, 1));
-        return;
-      }
-      case 'snap-model-all': {
-        const withModel = [...modelsOfAll().entries()].filter(([, m]) => m !== null);
-        if (withModel.length === 0) {
-          host.ui.toast(
-            'warn',
-            'No electrode here has a model: there is no geometry sidecar, and no model column or ' +
-              'part number the catalogue recognises. Re-fit re-spaces at the observed median gap.'
-          );
-          return;
-        }
-        const answer = await host.ui.confirm(
-          'Snap every electrode to its model?',
-          `${withModel.length} of ${set.groups.length} electrodes have a resolved model and will be ` +
-            `moved onto it. Undo puts them back.`,
-          ['Snap to model', 'Cancel']
-        );
-        if (answer !== 0) return;
-        const reports = await doModelSnap(
-          withModel.map(([name]) => name),
-          snapRadiusMm
-        );
-        const moved = reports.reduce((n, r) => n + r.moved, 0);
-        const flagged = reports.reduce((n, r) => n + r.flagged, 0);
-        host.ui.toast(
-          'info',
-          moved === 0
-            ? 'Nothing moved: no electrode’s template found metal to sit on.'
-            : `Snapped ${moved} contacts on ${reports.filter((r) => r.skipped === null).length} ` +
-              `electrodes to their models${flagged === 0 ? '.' : `; ${flagged} gaps are off by more than 0.75 mm.`}`
+            : `${snapLine(reports) ?? 'Snapped'}, mean ${meanShiftMm.toFixed(2)} mm.`
         );
         return;
       }
@@ -2093,7 +2047,7 @@ export function createModel(host: ModuleHost): SeegModel {
         if (text === null) throw new ModuleHostError(`could not read ${tsv}`);
         const ok = applyTable(tsv, text);
         if (!ok) throw new ModuleHostError(`${baseNameOf(tsv)} is not a usable electrodes table`);
-        // The geometry sidecar, so a headless `snap-model` has the same sources the panel does. It
+        // The geometry sidecar, so a headless `snap` has the same sources the panel does. It
         // is a sibling of the table the job named, which is what puts it on the read allow-list.
         const beside = bundleOf(await host.files.siblings(tsv));
         if (beside.geometry !== null) await readGeometrySidecar(beside.geometry);
@@ -2134,32 +2088,19 @@ export function createModel(host: ModuleHost): SeegModel {
         }
         const radius = args['radiusMm'];
         const radiusMm = typeof radius === 'number' ? clampSnapRadius(radius) : snapRadiusMm;
-        return doSnap(scope, radiusMm);
-      }
-      // The catalogue-aware pair (0.2.0). `electrode` absent means every electrode that has a
-      // resolved model; one that has none is reported as skipped rather than silently re-spaced,
-      // because a job that asked for a model snap and got an even re-spacing would never learn it.
-      case 'snap-model': {
-        const wanted = args['electrode'];
-        const radius = args['radiusMm'];
-        const radiusMm = typeof radius === 'number' ? clampSnapRadius(radius) : snapRadiusMm;
-        const groups =
-          typeof wanted === 'string'
-            ? [wanted]
-            : [...modelsOfAll().entries()].filter(([, m]) => m !== null).map(([name]) => name);
-        const reports = await doModelSnap(groups, radiusMm);
+        const { moved, meanShiftMm, reports } = await doSnap(scope, radiusMm);
         return {
+          moved,
+          meanShiftMm,
           electrodes: reports.map((r) => ({
             electrode: r.electrode,
+            mode: r.mode,
             model: r.model,
-            source: r.source,
             moved: r.moved,
             meanShiftMm: r.meanShiftMm,
-            offAxisRejected: r.offAxisRejected,
+            pitchMm: r.pitchMm,
+            templateHeld: r.templateHeld,
             outliers: r.outliers,
-            flaggedGaps: r.flagged,
-            residualsMm: r.residuals.map((g) => g.residualMm),
-            skipped: r.skipped,
           })),
         };
       }

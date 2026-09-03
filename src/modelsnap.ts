@@ -1,32 +1,21 @@
 /**
- * **What the electrode is**, and what follows from knowing it.
+ * **What the electrode is**, and where its contacts therefore are.
  *
- * `shaft.ts` knows a depth electrode is a rigid rod with contacts along it and contact 1 at the
- * deep end; it does not know *which* rod. Re-fit therefore re-spaces at the shaft's own **median
- * observed gap**, which is the best a module can do with no catalogue — and is wrong for the whole
- * Ad-Tech Behnke-Fried family, whose first gap is not its second. A BF10R-SP21X measured 3.0 mm
- * then 5.5 mm re-spaced at its median comes out uniformly 5.5 mm, contact 2 moved 2.5 mm off the
- * metal it is inside, and every number the panel prints about it is then self-consistent and wrong.
+ * Two things live here. The first is model resolution: `shaft.ts` knows a depth electrode is a rigid
+ * rod with contacts along it and contact 1 at the deep end, but not *which* rod, so Re-fit re-spaces
+ * at the shaft's own **median observed gap** — the best a module can do with no catalogue, and wrong
+ * for the whole Ad-Tech Behnke-Fried family, whose first gap is not its second. A BF10R-SP21X
+ * measured 3.0 mm then 5.5 mm re-spaced at its median comes out uniformly 5.5 mm, contact 2 moved
+ * 2.5 mm off the metal it is inside, and every number the panel prints about it is then
+ * self-consistent and wrong. {@link resolveElectrodeModel} is the other half: the subject's own
+ * seegprep sidecar, then a bundled catalogue keyed by a part number, then honestly nothing.
  *
- * So this file is the other half: given a **model** — a gap template with a known number of
- * contacts — fit the rod, slide the template along it until it sits on the brightest metal, and
- * put each contact where the template and the image agree. Three things make that safe:
+ * The second is **the snap** — {@link planAxisSnap}, one function for every scope, with a model or
+ * without one. Its own header says why a contact may not move sideways off its shaft.
  *
- *  * **The fit rejects one outlier.** A single contact dragged off the shaft (or a localiser's
- *    stray) drags a least-squares axis with it, and an axis that is wrong is a template that is
- *    wrong everywhere. One rejection pass, never two: two passes on ten contacts is a fit of
- *    whatever survived, which is not a fit of the electrode.
- *  * **The template is slid, not scaled.** The gaps come from the manufacturer; only *where the
- *    tip is* is unknown, so the search has exactly one free parameter and cannot absorb a bad model
- *    by stretching.
- *  * **A per-contact peak that lands off the axis is refused.** `peakCentroid` weighs everything
- *    bright in its box, and next to a shaft that is often the *neighbouring* shaft. More than
- *    {@link OFF_AXIS_LIMIT_MM} off the fitted line is not this electrode's metal, and the contact
- *    keeps the on-axis template position rather than jumping to someone else's.
- *
- * **Nothing here renumbers.** `shaft.ts`'s rule is unchanged and applies to this too: only Re-fit
- * and Renumber tip-first ever change a contact's number or name, so a snap-to-model moves contacts
- * and leaves the table's `csc` mapping exactly as the clinic wired it.
+ * **Nothing here renumbers.** `shaft.ts`'s rule applies to this too: only Re-fit and Renumber
+ * tip-first ever change a contact's number or name, so a snap moves contacts and leaves the table's
+ * `csc` mapping exactly as the clinic wired it.
  *
  * **Every distance in this file is 3-D**, in world millimetres, and so is every distance derived
  * from it that the panel prints.
@@ -694,113 +683,7 @@ export async function slideTemplate(
   return fine === null || fine.score < coarse.score ? coarse : fine;
 }
 
-// ---- the two edits --------------------------------------------------------------------------------
-
-export interface ModelSnapPlan {
-  /** One position per contact, in the tip-first order handed in. */
-  positions: vec3[];
-  /** `t` of contact 1 along the fitted axis after the slide. */
-  tStart: number;
-  /** How many contacts landed on a `peakCentroid` answer rather than the bare template position. */
-  peaked: number;
-  /** How many peak answers were refused for landing more than 1 mm off the axis. */
-  offAxisRejected: number;
-  /** How many contacts the fit's one rejection pass dropped before fitting the axis. */
-  outliers: number;
-  residuals: GapResidual[];
-}
-
-/**
- * Move each template position onto the local peak, unless the peak is not on this shaft.
- *
- * The refusal is the point (see the file header): `peakCentroid` weighs everything bright in its
- * box, and the brightest thing near a contact is often the *neighbouring* electrode. A peak more
- * than {@link OFF_AXIS_LIMIT_MM} off the fitted line is therefore not this rod's metal, and the
- * contact stays on the template — which is a position derived from the manufacturer's geometry and
- * the shaft's own axis, and is never nothing.
- */
-function peakOrTemplate(
-  template: readonly vec3[],
-  fit: AxisFit,
-  peak: PeakFn,
-  snapRadiusMm: number
-): { positions: vec3[]; peaked: number; offAxisRejected: number } {
-  let peaked = 0;
-  let offAxisRejected = 0;
-  const positions = template.map((point) => {
-    const found = peak(point, snapRadiusMm);
-    if (found === null) return point;
-    if (offAxisMm(fit, found) > OFF_AXIS_LIMIT_MM) {
-      offAxisRejected += 1;
-      return point;
-    }
-    peaked += 1;
-    return [...found] as vec3;
-  });
-  return { positions, peaked, offAxisRejected };
-}
-
-export interface ModelSnapInput {
-  /** The electrode's current contact positions, **tip-first** — contact 1 at index 0. */
-  positionsTipFirst: readonly vec3[];
-  /** The model's gaps, tip-first. Only the first `n − 1` are used for `n` present contacts. */
-  gapsMm: readonly number[];
-  sample: SampleFn;
-  peak: PeakFn;
-  snapRadiusMm: number;
-  options?: SlideOptions;
-}
-
-/**
- * Snap one electrode onto its model: robust fit → slide the template → per-contact peak.
- *
- * The present contacts are taken to occupy the model's **first** `n` slots, which is what a
- * partially localised shaft is: a localiser finds the deep contacts, whose metal is surrounded by
- * brain, and loses the shallow ones in the skull's own brightness. A shaft missing a *middle*
- * contact is a shaft this will mis-template, and the per-gap residuals in the panel are what say so
- * — which is why they are printed rather than merely checked.
- *
- * `null` for fewer than two contacts (nothing to fit an axis through) or when the oracle answered
- * for nothing at all. Nothing is mutated; the caller applies the plan as one history entry.
- */
-export async function planModelSnap(input: ModelSnapInput): Promise<ModelSnapPlan | null> {
-  const positions = input.positionsTipFirst;
-  if (positions.length < 2) return null;
-  const fit = robustFit(positions);
-  if (fit === null) return null;
-
-  const cumulative = cumulativeMm(input.gapsMm, positions.length);
-  // Which way along the fitted axis the numbering runs. The axis's sign is the kit's canonical one
-  // and has nothing to do with anatomy, so it is read off the contacts rather than assumed.
-  const direction: 1 | -1 =
-    (fit.t[positions.length - 1] as number) >= (fit.t[0] as number) ? 1 : -1;
-
-  const slid = await slideTemplate(
-    fit,
-    fit.t[0] as number,
-    direction,
-    cumulative,
-    input.sample,
-    input.options
-  );
-  if (slid === null) return null;
-
-  const template = cumulative.map((offset) => pointAt(fit, slid.tStart + direction * offset));
-  const { positions: snapped, peaked, offAxisRejected } = peakOrTemplate(
-    template,
-    fit,
-    input.peak,
-    input.snapRadiusMm
-  );
-  return {
-    positions: snapped,
-    tStart: slid.tStart,
-    peaked,
-    offAxisRejected,
-    outliers: fit.rejected.length,
-    residuals: gapResiduals(snapped, input.gapsMm),
-  };
-}
+// ---- extending a partially localised shaft ------------------------------------------------------
 
 export interface ExtendInput {
   positionsTipFirst: readonly vec3[];
@@ -865,4 +748,460 @@ export function missingCounts(
     }
   }
   return out;
+}
+
+// ---- one snap: along the axis, never off it -------------------------------------------------------
+
+/**
+ * **The snap.** Every scope, with or without a model, is this function.
+ *
+ * The defect it exists to fix was visible on P073 and is visible on any dense implant: snapping each
+ * contact to its *own* blob's intensity centroid makes the contacts zigzag ±0.3–0.7 mm around the
+ * straight orange trajectory the drag guide draws, because CT bloom is not symmetric about the rod —
+ * a neighbouring shaft, a bright skull edge or an anisotropic voxel pulls each centroid a different
+ * way. A depth electrode is one rigid rod. Its contacts are collinear by construction, so a snap that
+ * can move a contact sideways off its own shaft is a snap with a degree of freedom the hardware does
+ * not have.
+ *
+ * So the freedom is removed and put where it belongs:
+ *
+ *  * **Along the axis, per contact.** The 1-D intensity profile in a {@link DEFAULT_TUBE_RADIUS_MM}
+ *    tube around the axis is sampled at {@link PROFILE_STEP_MM} through a window of
+ *    ±{@link WINDOW_PITCH_FRACTION} × pitch, and the contact goes to its peak, parabolically refined
+ *    between samples. The window is under half a pitch on purpose: a wider one lets a contact fall
+ *    into its neighbour's blob, which is a mis-numbered electrode rather than a mis-placed contact.
+ *  * **Sideways, per electrode — once.** After the first pass the intensity-weighted centroid of a
+ *    disc around each contact says where the metal really is relative to the fitted line; the axis is
+ *    re-fitted to those centroids and the profiles are taken again. Two passes, not iteration to
+ *    convergence: the second pass is the line settling onto the rod, and a third would be fitting the
+ *    noise. **No contact ever carries a lateral offset of its own** — the returned positions are
+ *    `centroid + t · axis` arithmetic and nothing else, which is what makes them exactly collinear.
+ *  * **Regularised by the model, when there is one.** {@link slideTemplate} puts the manufacturer's
+ *    gap vector on the brightest metal; each contact then takes the profile peak *nearest its
+ *    template position*, and a peak farther than {@link TEMPLATE_REJECT_FRACTION} × the local gap is
+ *    refused in favour of the template itself. That is what stops a contact skipping to the wrong
+ *    blob on a lead whose first gap is not its second. Without a model the measured median pitch sets
+ *    the search **window** and nothing else: an observed median is not a datasheet and must never
+ *    re-space a shaft behind the user's back.
+ *
+ * `null` means "nothing to say" and the caller leaves the contacts alone (or falls back to the
+ * per-contact centroid snap for a shaft too short to fit): fewer than
+ * {@link AXIS_SNAP_MIN_CONTACTS} contacts, a degenerate set, or an oracle that answered for nothing.
+ */
+
+/** Below this many contacts there is no axis worth trusting, and the caller snaps per contact. */
+export const AXIS_SNAP_MIN_CONTACTS = 3;
+
+/** The 1-D profile's sample spacing along the axis, in millimetres. */
+export const PROFILE_STEP_MM = 0.1;
+
+/** Half the search window, as a fraction of the pitch. Under ½ so no contact reaches its neighbour. */
+export const WINDOW_PITCH_FRACTION = 0.45;
+
+/** A profile peak farther than this fraction of the local gap from the template is refused. */
+export const TEMPLATE_REJECT_FRACTION = 0.35;
+
+/** The radius of the tube the profile is averaged over, and of the disc the lateral centroid uses. */
+export const DEFAULT_TUBE_RADIUS_MM = 1;
+
+const DEFAULT_SPOKES = 6;
+
+/** Where one contact's final along-axis position came from. */
+export type AxisSource =
+  /** The peak of its 1-D intensity profile. */
+  | 'profile'
+  /** The model template's position, because no profile peak near it was acceptable. */
+  | 'template'
+  /** `peakCentroid`'s answer projected onto the axis — the host without `sampleVolume`. */
+  | 'peak'
+  /** Nothing was found; the contact kept its own projection onto the axis. */
+  | 'held';
+
+export interface AxisSnapPlan {
+  /** One position per contact, tip-first, **exactly** on {@link fit}'s line. */
+  positions: vec3[];
+  /** The axis they were put on — the same line the drag guide draws. */
+  fit: AxisFit;
+  /** `'axis-model'` when the manufacturer's gaps regularised the along-axis positions. */
+  mode: 'axis' | 'axis-model';
+  /** Where each contact's along-axis position came from, in the same order. */
+  sources: AxisSource[];
+  /** How many contacts held the template position because no peak near it was acceptable. */
+  templateHeld: number;
+  /** How many contacts the fit's one rejection pass dropped. */
+  outliers: number;
+  /** The measured median pitch, which set the search window. */
+  pitchMm: number;
+  /** Gap residuals against the model, or `[]` when there is none. */
+  residuals: GapResidual[];
+}
+
+export interface AxisSnapOptions {
+  stepMm?: number;
+  tubeRadiusMm?: number;
+  spokes?: number;
+  windowFraction?: number;
+}
+
+export interface AxisSnapInput {
+  /** The electrode's current contact positions, **tip-first**. */
+  positionsTipFirst: readonly vec3[];
+  /** The model's gaps, tip-first, or `null` for an electrode whose model nothing resolved. */
+  gapsMm?: readonly number[] | null;
+  /** `sampleVolume`, or `null` on a host that has only `peakCentroid`. */
+  sample: SampleFn | null;
+  peak: PeakFn;
+  snapRadiusMm: number;
+  options?: AxisSnapOptions;
+}
+
+/** `t` of `p` along `fit`'s line. */
+function tOf(fit: AxisFit, p: vec3): number {
+  return dot([p[0] - fit.centroid[0], p[1] - fit.centroid[1], p[2] - fit.centroid[2]], fit.axis);
+}
+
+/** An orthonormal pair spanning the plane perpendicular to `axis`. */
+function frameOf(axis: vec3): { u: vec3; v: vec3 } {
+  const u = perpendicularTo(axis);
+  const v: vec3 = [
+    axis[1] * u[2] - axis[2] * u[1],
+    axis[2] * u[0] - axis[0] * u[2],
+    axis[0] * u[1] - axis[1] * u[0],
+  ];
+  return { u, v };
+}
+
+/** The median of the centre-to-centre distances between consecutive contacts. `null` for fewer than 2. */
+export function measuredPitchMm(positionsTipFirst: readonly vec3[]): number | null {
+  const gaps: number[] = [];
+  for (let i = 0; i + 1 < positionsTipFirst.length; i += 1) {
+    gaps.push(distanceMm(positionsTipFirst[i] as vec3, positionsTipFirst[i + 1] as vec3));
+  }
+  if (gaps.length === 0) return null;
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1
+    ? (sorted[mid] as number)
+    : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+}
+
+/** One contact's 1-D profile: the `t` grid and the tube-averaged intensity at each. */
+interface Profile {
+  t: number[];
+  value: (number | null)[];
+}
+
+/**
+ * The tube-averaged intensity profile around each `tCentres[i]`, in **one** `sample` call.
+ *
+ * One call and not one per contact: a ten-contact shaft at 0.1 mm through ±2.25 mm with six spokes is
+ * 3,150 points, which is one bounded batch read and ninety-nine fewer round trips than the obvious
+ * loop. The tube (rather than the centre line) is what makes the profile a property of the rod rather
+ * than of the voxel grid — a shaft half a voxel off the fitted line scores nothing on its centre line
+ * alone.
+ */
+async function profilesAlong(
+  fit: AxisFit,
+  tCentres: readonly number[],
+  halfWindowMm: number,
+  stepMm: number,
+  sample: SampleFn,
+  tubeRadiusMm: number,
+  spokes: number
+): Promise<Profile[]> {
+  const { u, v } = frameOf(fit.axis);
+  const steps = Math.max(1, Math.round(halfWindowMm / stepMm));
+  const grids = tCentres.map((centre) => {
+    const grid: number[] = [];
+    for (let k = -steps; k <= steps; k += 1) grid.push(centre + k * stepMm);
+    return grid;
+  });
+  const points: vec3[] = [];
+  for (const grid of grids) {
+    for (const t of grid) {
+      points.push(...tubePoints(pointAt(fit, t), u, v, tubeRadiusMm, spokes));
+    }
+  }
+  const values = await sample(points);
+  const per = spokes + 1;
+  const out: Profile[] = [];
+  let at = 0;
+  for (const grid of grids) {
+    const profile: Profile = { t: grid, value: [] };
+    for (let i = 0; i < grid.length; i += 1) {
+      profile.value.push(meanFinite(values.slice(at, at + per) as number[]));
+      at += per;
+    }
+    out.push(profile);
+  }
+  return out;
+}
+
+/**
+ * The sub-sample position of a profile's maximum, by parabolic interpolation through its neighbours.
+ *
+ * The samples are 0.1 mm apart and a contact is not on the grid, so the bare argmax quantises every
+ * position to a tenth of a millimetre — which is the same order as the zigzag this whole file is
+ * removing. Three points around a smooth maximum have exactly one parabola, and its vertex is the
+ * answer; a maximum at either end of the window has no such triple and stays where it is.
+ */
+function refinePeakAt(profile: Profile, index: number): number {
+  const y0 = profile.value[index - 1];
+  const y1 = profile.value[index];
+  const y2 = profile.value[index + 1];
+  const t = profile.t[index] as number;
+  if (y0 == null || y1 == null || y2 == null) return t;
+  const denominator = y0 - 2 * y1 + y2;
+  if (denominator === 0) return t;
+  const shift = (0.5 * (y0 - y2)) / denominator;
+  // A vertex more than one sample away means the triple was not a maximum: keep the grid point.
+  if (!Number.isFinite(shift) || Math.abs(shift) > 1) return t;
+  const step = (profile.t[1] as number) - (profile.t[0] as number);
+  return t + shift * step;
+}
+
+/** The profile's global maximum, refined. `null` when it answered for nothing. */
+function peakOf(profile: Profile): number | null {
+  let best = -1;
+  for (let i = 0; i < profile.value.length; i += 1) {
+    const value = profile.value[i];
+    if (value == null) continue;
+    if (best < 0 || value > (profile.value[best] as number)) best = i;
+  }
+  return best < 0 ? null : refinePeakAt(profile, best);
+}
+
+/** Every local maximum of the profile, refined, in `t` order. Endpoints count. */
+function maximaOf(profile: Profile): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < profile.value.length; i += 1) {
+    const y = profile.value[i];
+    if (y == null) continue;
+    const left = profile.value[i - 1];
+    const right = profile.value[i + 1];
+    const risesFromLeft = left == null || y >= left;
+    const fallsToRight = right == null || y >= right;
+    if (risesFromLeft && fallsToRight) out.push(refinePeakAt(profile, i));
+  }
+  return out;
+}
+
+/**
+ * The intensity-weighted centroid of a disc around each contact — where the metal is, sideways.
+ *
+ * This is the **only** lateral measurement in the snap, and it is consumed by the axis re-fit rather
+ * than by any individual contact: the electrode as a whole may sit half a millimetre off the line
+ * fitted to hand-placed contacts, and this is what lets the line move onto it. Weights are the sample
+ * minus the disc's own minimum, so a constant background contributes nothing and the centroid is a
+ * property of the bright thing in the disc.
+ */
+async function lateralCentroids(
+  fit: AxisFit,
+  ts: readonly number[],
+  sample: SampleFn,
+  radiusMm: number
+): Promise<(vec3 | null)[]> {
+  const { u, v } = frameOf(fit.axis);
+  const rings = [radiusMm / 3, (2 * radiusMm) / 3, radiusMm];
+  const spokes = 8;
+  const perContact: vec3[][] = ts.map((t) => {
+    const centre = pointAt(fit, t);
+    const disc: vec3[] = [centre];
+    for (const r of rings) {
+      for (let s = 0; s < spokes; s += 1) {
+        const angle = (2 * Math.PI * s) / spokes;
+        const cos = Math.cos(angle) * r;
+        const sin = Math.sin(angle) * r;
+        disc.push([
+          centre[0] + u[0] * cos + v[0] * sin,
+          centre[1] + u[1] * cos + v[1] * sin,
+          centre[2] + u[2] * cos + v[2] * sin,
+        ]);
+      }
+    }
+    return disc;
+  });
+  const flat = perContact.flat();
+  const values = await sample(flat);
+  const out: (vec3 | null)[] = [];
+  let at = 0;
+  for (const disc of perContact) {
+    const slice = values.slice(at, at + disc.length);
+    at += disc.length;
+    let floor = Infinity;
+    for (const value of slice) if (Number.isFinite(value)) floor = Math.min(floor, value);
+    if (!Number.isFinite(floor)) {
+      out.push(null);
+      continue;
+    }
+    let weight = 0;
+    const sum: vec3 = [0, 0, 0];
+    disc.forEach((p, i) => {
+      const value = slice[i];
+      if (value === undefined || !Number.isFinite(value)) return;
+      const w = value - floor;
+      if (w <= 0) return;
+      weight += w;
+      sum[0] += w * p[0];
+      sum[1] += w * p[1];
+      sum[2] += w * p[2];
+    });
+    out.push(weight > 0 ? [sum[0] / weight, sum[1] / weight, sum[2] / weight] : null);
+  }
+  return out;
+}
+
+/** The gap on either side of contact `i`, whichever is smaller — what "near enough" is measured in. */
+function localGapMm(gapsMm: readonly number[], i: number, fallbackMm: number): number {
+  const before = gapsMm[i - 1];
+  const after = gapsMm[i];
+  const candidates = [before, after].filter((g): g is number => g !== undefined && g > 0);
+  return candidates.length === 0 ? fallbackMm : Math.min(...candidates);
+}
+
+/**
+ * The along-axis positions a host with only `peakCentroid` can give: its answer, projected onto the
+ * line.
+ *
+ * The projection is the point. `peakCentroid`'s vector is where the bright mass is, bloom included,
+ * and taking it whole is exactly the zigzag; taking only its component *along* the rod keeps the
+ * information it does have (which blob, and where along it) and discards the part the hardware says
+ * cannot be true.
+ */
+function peakTs(
+  positions: readonly vec3[],
+  fit: AxisFit,
+  peak: PeakFn,
+  snapRadiusMm: number
+): { ts: number[]; sources: AxisSource[]; found: vec3[] } {
+  const ts: number[] = [];
+  const sources: AxisSource[] = [];
+  const found: vec3[] = [];
+  positions.forEach((p, i) => {
+    const hit = peak(p, snapRadiusMm);
+    if (hit === null || offAxisMm(fit, hit) > OFF_AXIS_LIMIT_MM) {
+      ts.push(fit.t[i] as number);
+      sources.push('held');
+      return;
+    }
+    ts.push(tOf(fit, hit));
+    sources.push('peak');
+    found.push([...hit] as vec3);
+  });
+  return { ts, sources, found };
+}
+
+export async function planAxisSnap(input: AxisSnapInput): Promise<AxisSnapPlan | null> {
+  const positions = input.positionsTipFirst;
+  if (positions.length < AXIS_SNAP_MIN_CONTACTS) return null;
+  const first = robustFit(positions);
+  if (first === null) return null;
+
+  const options = input.options ?? {};
+  const stepMm = options.stepMm ?? PROFILE_STEP_MM;
+  const tubeRadiusMm = options.tubeRadiusMm ?? DEFAULT_TUBE_RADIUS_MM;
+  const spokes = options.spokes ?? DEFAULT_SPOKES;
+  const windowFraction = options.windowFraction ?? WINDOW_PITCH_FRACTION;
+  const gapsMm = input.gapsMm ?? null;
+  // The measured median sets the **window** and nothing else, model or no model: it is what says how
+  // far a contact could plausibly be from where it is now, which is the one question it can answer.
+  const pitchMm = measuredPitchMm(positions) ?? 0;
+  const halfWindowMm = Math.max(stepMm * 2, windowFraction * (pitchMm > 0 ? pitchMm : 5));
+
+  let fit = first;
+  let ts: number[];
+  let sources: AxisSource[];
+  let profiles: Profile[] | null = null;
+
+  if (input.sample === null) {
+    // No `sampleVolume`: `peakCentroid`, projected. Two passes all the same — the peaks are the
+    // lateral measurement, so the axis is re-fitted through them and the projection retaken.
+    const firstPass = peakTs(positions, fit, input.peak, input.snapRadiusMm);
+    const refit = firstPass.found.length >= 2 ? robustFit(firstPass.found) : null;
+    if (refit !== null) fit = refit;
+    const second = peakTs(positions, fit, input.peak, input.snapRadiusMm);
+    ts = second.ts;
+    sources = second.sources;
+    if (!sources.includes('peak')) return null;
+  } else {
+    const sample = input.sample;
+    ts = [...fit.t];
+    profiles = await profilesAlong(fit, ts, halfWindowMm, stepMm, sample, tubeRadiusMm, spokes);
+    const firstPeaks = profiles.map((profile) => peakOf(profile));
+    if (firstPeaks.every((t) => t === null)) return null;
+    ts = firstPeaks.map((t, i) => t ?? (ts[i] as number));
+
+    // The one lateral adjustment, and it is the whole electrode's: re-fit the line to where the metal
+    // actually is, then take the profiles again on the settled line.
+    const centroids = (await lateralCentroids(fit, ts, sample, tubeRadiusMm)).filter(
+      (c): c is vec3 => c !== null
+    );
+    if (centroids.length >= 2) {
+      const refit = robustFit(centroids);
+      if (refit !== null) {
+        const onOldAxis = ts.map((t) => pointAt(fit, t));
+        fit = refit;
+        ts = onOldAxis.map((p) => tOf(fit, p));
+      }
+    }
+    profiles = await profilesAlong(fit, ts, halfWindowMm, stepMm, sample, tubeRadiusMm, spokes);
+    const secondPeaks = profiles.map((profile) => peakOf(profile));
+    sources = secondPeaks.map((t) => (t === null ? 'held' : 'profile'));
+    ts = secondPeaks.map((t, i) => t ?? (ts[i] as number));
+    if (!sources.includes('profile')) return null;
+  }
+
+  let mode: 'axis' | 'axis-model' = 'axis';
+  let templateHeld = 0;
+
+  if (gapsMm !== null && gapsMm.length + 1 >= positions.length) {
+    const cumulative = cumulativeMm(gapsMm, positions.length);
+    const direction: 1 | -1 = (ts[positions.length - 1] as number) >= (ts[0] as number) ? 1 : -1;
+    // With `sampleVolume` the template is slid against the image; without it, the best offset is the
+    // least-squares one against the peaks already found — the same single free parameter, measured
+    // rather than searched, because there is no affordable profile to search.
+    const tStart =
+      input.sample === null
+        ? ts.reduce((sum, t, i) => sum + (t - direction * (cumulative[i] as number)), 0) / ts.length
+        : ((
+            await slideTemplate(fit, ts[0] as number, direction, cumulative, input.sample, {
+              tubeRadiusMm,
+              spokes,
+            })
+          )?.tStart ?? null);
+    if (tStart !== null) {
+      mode = 'axis-model';
+      ts = ts.map((t, i) => {
+        const template = tStart + direction * (cumulative[i] as number);
+        const limit = TEMPLATE_REJECT_FRACTION * localGapMm(gapsMm, i, pitchMm > 0 ? pitchMm : 5);
+        const profile = profiles?.[i] ?? null;
+        const candidates = profile === null ? (sources[i] === 'held' ? [] : [t]) : maximaOf(profile);
+        let best: number | null = null;
+        for (const candidate of candidates) {
+          if (best === null || Math.abs(candidate - template) < Math.abs(best - template)) {
+            best = candidate;
+          }
+        }
+        if (best === null || Math.abs(best - template) > limit) {
+          templateHeld += 1;
+          sources[i] = 'template';
+          return template;
+        }
+        sources[i] = profile === null ? (sources[i] as AxisSource) : 'profile';
+        return best;
+      });
+    }
+  }
+
+  const snapped = ts.map((t) => pointAt(fit, t));
+  return {
+    positions: snapped,
+    fit,
+    mode,
+    sources,
+    templateHeld,
+    outliers: fit.rejected.length,
+    pitchMm,
+    residuals: gapsMm === null ? [] : gapResiduals(snapped, gapsMm),
+  };
 }

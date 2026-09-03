@@ -29,7 +29,6 @@ import type { SeegModel, SeegRow, SeegView } from "./editor";
 const CHORDS: Record<string, string> = {
   add: "a",
   snap: "s",
-  "snap-model": "⇧F",
   "snap-electrode": "⇧S",
   refit: "f",
   "flip-tip": "t",
@@ -271,32 +270,6 @@ function ModelSection({
       </div>
 
       <div className="flex flex-wrap items-center gap-1">
-        <button
-          type="button"
-          data-testid="seeg-snap-model"
-          className="tvx-btn"
-          disabled={model === null}
-          title={
-            model === null
-              ? 'This electrode has no model to snap to'
-              : measured
-                ? 'Fit the shaft, slide its own measured spacing onto the brightest metal, then snap each contact (⇧F)'
-                : `Fit the shaft, slide a ${model.name} template onto the brightest metal, then snap each contact (⇧F)`
-          }
-          onClick={command('snap-model')}
-        >
-          Snap to model
-        </button>
-        <button
-          type="button"
-          data-testid="seeg-snap-model-all"
-          className="tvx-btn"
-          disabled={view.modelledElectrodes === 0}
-          title={`Snap every electrode that has a model — ${view.modelledElectrodes} of ${view.electrodes.length} (asks first)`}
-          onClick={command('snap-model-all')}
-        >
-          Snap all to model…
-        </button>
         <button
           type="button"
           data-testid="seeg-extend"
@@ -546,7 +519,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           disabled={view.selectedId === null}
           title={label(
             "snap",
-            "Snap the selected contact to the local CT peak",
+            "Put the selected contact on its electrode's fitted axis, at the CT peak along it",
           )}
           onClick={command("snap")}
         >
@@ -558,7 +531,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           className="tvx-btn"
           title={label(
             "snap-electrode",
-            "Snap every contact of this electrode",
+            "Put every contact of this electrode on its fitted axis, at the CT peak along it",
           )}
           onClick={command("snap-electrode")}
         >
@@ -568,12 +541,23 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-snap-all"
           className="tvx-btn"
-          title="Snap every contact of every electrode (asks first)"
+          title="Snap every contact of every electrode onto its own shaft axis (asks first)"
           onClick={command("snap-all")}
         >
           Snap all…
         </button>
       </div>
+
+      {/*
+        There is one Snap, and what it did depends on whether the electrode's model resolved — so
+        this line is the only way to tell "on the axis, regularised by a BF10R-SP21X" from "on the
+        axis, window sized by the measured pitch". The contacts look the same either way.
+      */}
+      {view.snapNote !== null && (
+        <p data-testid="seeg-snap-mode" className="text-tvx-dim">
+          {view.snapNote}
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-1">
         <button

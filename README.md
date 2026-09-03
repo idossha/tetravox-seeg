@@ -123,7 +123,6 @@ operations (`ghost`, `wire`, `size`) — which of them are on is part of what a 
 | add contacts              | **Add** (`a`) — then every click in a pane drops a new contact on the chosen electrode   |
 | walk the electrode        | `n` / `p`, or the list — the crosshair follows, so every pane slices through the contact |
 | snap to the metal         | `s` for the selected contact, `⇧S` for the whole electrode, **Snap all…** for every one  |
-| snap to the model         | `⇧F` for the electrode, **Snap all to model…** for every one that has a model            |
 | add the missing contacts  | **Extend**, when the model says the shaft has more than the table does                   |
 | re-fit the shaft          | `f`                                                                                      |
 | renumber from the tip     | **Renumber tip-first**                                                                   |
@@ -144,10 +143,41 @@ it. The contact you clicked is now on the slice, and a second click grabs it in 
 you click the marker you can see, the view comes to it, and you drag from there — you never have to scroll
 onto a contact first to be able to pick it.
 
-**Snap** moves a contact to the intensity-weighted peak of a small box around it — the metal it is
-inside — at the radius the panel's field sets (0.5–5 mm, 1.5 mm by default). A contact with nothing
-bright near it does not move and is not counted. _Snap all_ asks first, because it touches every
-electrode at once; one snap of any scope is a single undo step.
+**Snap** puts a contact **on its electrode's shaft**, at the point along it where the CT is
+brightest. A depth electrode is one rigid rod, so its contacts are collinear by construction — and a
+snap that could move a contact sideways is a snap with a degree of freedom the hardware does not
+have. What it does, whatever the scope and whether or not the model is known:
+
+1. fits the electrode's axis through all of its contacts, rejecting one that is off the line;
+2. samples the CT along that axis in a 1 mm tube, every 0.1 mm, through a window of ±0.45 × the
+   shaft's own pitch around each contact, and puts the contact at the peak of that profile —
+   interpolated between samples, so the position is not quantised to the sampling step;
+3. re-fits the axis to where the metal actually is (the intensity-weighted centroid of a disc around
+   each contact) and takes the profiles again on the settled line. **That is the only sideways
+   adjustment, and it moves the whole electrode.** No contact ever carries a lateral offset of its
+   own;
+4. and where the model is known, slides the manufacturer's gap template onto the brightest metal and
+   takes each contact's position as the profile peak *nearest* its template position — keeping the
+   template position outright if the nearest peak is more than 0.35 × the local gap away.
+
+The panel prints which of the last two ran: `snapped along axis · model BF10R-SP21X`, or
+`· measured pitch 5.0 mm` when nothing resolved a model. Without a model the measured median pitch
+sizes the search **window** and nothing else — an observed median is not a datasheet, and it never
+re-spaces a shaft.
+
+The radius field (0.5–5 mm, 1.5 mm by default) is what the fallback path uses: on a host without
+`sampleVolume` the snap reads `peakCentroid` at that radius and **projects its answer onto the
+axis**, keeping which blob and where along it, discarding the sideways part. A contact with nothing
+bright near it does not move. An electrode with fewer than three contacts has no rod to fit and keeps
+the old per-contact centroid snap, alone.
+
+Why it is like this: on P073, snapping each contact to its own blob's intensity centroid made the
+contacts zigzag 0.3–0.7 mm around the straight trajectory line the drag guide draws — CT bloom is not
+symmetric about the rod, so each centroid was pulled a different way. The contacts are on a rod;
+now the snap says so.
+
+_Snap all_ asks first, because it touches every electrode at once; one snap of any scope is a single
+undo step, and none of them renumbers.
 
 ### Which electrode is this?
 
@@ -183,15 +213,11 @@ module's sibling rule may ascend at most three.
 **No model at all is a supported state, not a degraded one.** With nothing resolved the module does
 exactly what it did before this existed, and the section says so rather than pretending.
 
-**Snap to model** (`⇧F`) fits a line through the electrode's contacts, **rejects one contact that is
-off it** (a single stray drags a least-squares axis, and a wrong axis is a wrong template
-everywhere), slides the model's gap template along that axis until it sits on the brightest metal,
-and then moves each contact to its own local peak — *unless* the peak lands more than **1 mm off the
-rod**, in which case the contact keeps the template position. That last rule is the one that matters
-on a dense implant: `Snap`'s box weighs everything bright inside it, and next to one shaft that is
-often the neighbouring shaft. The gaps are the manufacturer's and are never stretched, so the search
-has exactly one free parameter and a wrong model cannot be made to fit — the per-gap table is what
-says so, flagging anything more than 0.75 mm out. Snapping to model **never renumbers**.
+There is **no separate "snap to model" button**. A model, when one resolves, changes what the
+ordinary Snap does — step 4 above — rather than offering a second kind of snap to choose between.
+The gaps are the manufacturer's and are never stretched, so the template has exactly one free
+parameter and a wrong model cannot be made to fit; the per-gap table is what says so, flagging
+anything more than 0.75 mm out.
 
 **Extend** places the contacts a shaft is missing, when the model says there are more than the table
 has. They go beyond the *entry* end at the model's spacing and are then snapped, and they save with
@@ -255,8 +281,9 @@ writing a table in which everything looks new.
 ### From a job file
 
 Every button is also a job-file operation, so a batch can do what the panel does — `load`, `snap`,
-`snap-model`, `extend`, `refit`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`,
-`stats` and `save`. `flip-tip` matters more
+`extend`, `refit`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`,
+`stats` and `save`. `snap` reports, per electrode, which mode ran (`axis` or `axis-model`) and the
+model it used, so a batch learns what it got. `flip-tip` matters more
 than it looks: which end of a shaft is contact 1 comes from a heuristic, `renumber` applies whatever the
 tip currently is, and this is how a batch corrects the shaft the heuristic read backwards — the same thing
 `t` does in the panel. See [Automation](https://idossha.github.io/tetravox/AUTOMATION.html).
@@ -355,7 +382,7 @@ src/
   Panel.tsx     chrome: reads the model through useSyncExternalStore, one call per control
   block.ts      the module's own record inside a scene file
   shaft.ts      depth-electrode geometry — the tip rule, re-fit, renumber
-  modelsnap.ts  which electrode this *is* — model resolution, the template slide, extend
+  modelsnap.ts  which electrode this *is* — model resolution, the axis snap, the template slide, extend
   catalogue.gen.ts  GENERATED: the gap table, from seegprep's electrode_models.json
   bids.ts       the seegprep derivative layout
 test/           vitest; test/setup.ts is the app's half of the SDK global

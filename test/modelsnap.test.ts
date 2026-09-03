@@ -28,7 +28,9 @@ import {
   modelsFromTable,
   parseGeometrySidecar,
   parseSiteCsv,
-  planModelSnap,
+  measuredPitchMm,
+  offAxisMm,
+  planAxisSnap,
   resolveElectrodeModel,
   robustFit,
 } from '../src/modelsnap';
@@ -410,14 +412,82 @@ describe.skipIf(!HAS_CONTACTS)('robustFit', () => {
   });
 });
 
-describe.skipIf(!HAS_CONTACTS)('planModelSnap', () => {
-  it('locks a Behnke-Fried template back onto the true offset from a 2 mm shifted start', async () => {
+/**
+ * A bright profile whose blobs are **off** the line the contacts sit on.
+ *
+ * This is the defect fixture. On P073 the contacts zigzagged 0.3–0.7 mm around the straight orange
+ * trajectory after a snap, because CT bloom pulls each blob's intensity centroid a different way and
+ * the old snap took the whole vector. So each blob here is displaced sideways by a per-contact
+ * amount, and the assertion is that the snapped contacts come out **exactly collinear** anyway: the
+ * lateral freedom belongs to the electrode, not to the contact.
+ */
+function zigzag(truth: readonly vec3[], amplitudeMm: number): vec3[] {
+  const perp: vec3 = [-AXIS[1], AXIS[0], 0];
+  const norm = Math.hypot(perp[0], perp[1], perp[2]);
+  return truth.map((p, i) => {
+    const swing = ((i % 2 === 0 ? 1 : -1) * amplitudeMm * (1 + (i % 3) * 0.4)) / norm;
+    return [p[0] + perp[0] * swing, p[1] + perp[1] * swing, p[2] + perp[2] * swing] as vec3;
+  });
+}
+
+describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
+  it('puts every contact exactly on the fitted axis, though every blob is off it', async () => {
+    const truth = offsets(RD_GAPS).map((t) => along(t));
+    // The blobs the CT actually shows: up to 0.7 mm to the side, alternating — the zigzag itself.
+    const blobs = zigzag(truth, 0.5);
+    // What the localiser handed over: the contacts a few tenths off, as a hand-placed set is.
+    const start = truth.map((p, i) => [p[0] + 0.2 * (i % 2 ? 1 : -1), p[1], p[2] - 0.15] as vec3);
+
+    const plan = await planAxisSnap({
+      positionsTipFirst: start,
+      gapsMm: null,
+      sample: brightAt(blobs),
+      peak: peakAt(blobs),
+      snapRadiusMm: 1.5,
+    });
+
+    expect(plan).not.toBeNull();
+    expect(plan?.mode).toBe('axis');
+    const fit = plan?.fit;
+    // The promise the drag guide's line makes: the contacts are ON it, to float error.
+    for (const [i, p] of (plan?.positions ?? []).entries()) {
+      expect(offAxisMm(fit!, p), `contact ${i + 1} off the axis`).toBeLessThan(1e-6);
+    }
+    // And the along-axis positions are the profile peaks: a blob's lateral offset does not move
+    // where along the rod it is, so each contact lands in its own blob's plane.
+    (plan?.positions ?? []).forEach((p, i) => {
+      const t = truth[i] as vec3;
+      const along =
+        (p[0] - t[0]) * (fit as { axis: vec3 }).axis[0] +
+        (p[1] - t[1]) * (fit as { axis: vec3 }).axis[1] +
+        (p[2] - t[2]) * (fit as { axis: vec3 }).axis[2];
+      expect(Math.abs(along), `contact ${i + 1} along the axis`).toBeLessThan(0.05);
+    });
+  });
+
+  it('is one line and one spacing: the zigzag is gone, not merely smaller', async () => {
+    const truth = offsets(RD_GAPS).map((t) => along(t));
+    const plan = await planAxisSnap({
+      positionsTipFirst: truth,
+      gapsMm: null,
+      sample: brightAt(zigzag(truth, 0.6)),
+      peak: peakAt(truth),
+      snapRadiusMm: 1.5,
+    });
+    const positions = plan?.positions ?? [];
+    // Collinear to float error means every consecutive gap is a straight-line gap, so the measured
+    // spacing is the along-axis spacing and nothing about it wobbles.
+    const gaps = positions.slice(1).map((p, i) => distance(positions[i] as vec3, p));
+    for (const gap of gaps) expect(Math.abs(gap - 5)).toBeLessThan(0.1);
+  });
+
+  it('regularises by the model: a Behnke-Fried lead keeps its 3.0 mm first gap', async () => {
     const truth = offsets(BF_GAPS).map((t) => along(t));
-    // What the localiser handed over: the whole shaft 2 mm along the axis, evenly spaced at 5.5 mm
-    // — which is what re-fitting a BF lead at its median gap produces, and is wrong at contact 2.
+    // The start the old Re-fit produces: evenly re-spaced at the median 5.5 mm, so contact 2 is
+    // 2.5 mm off the metal it is inside — and the whole shaft 2 mm along the axis besides.
     const start = truth.map((_p, i) => along(2 + i * 5.5));
 
-    const plan = await planModelSnap({
+    const plan = await planAxisSnap({
       positionsTipFirst: start,
       gapsMm: BF_GAPS,
       sample: brightAt(truth),
@@ -425,75 +495,84 @@ describe.skipIf(!HAS_CONTACTS)('planModelSnap', () => {
       snapRadiusMm: 1.5,
     });
 
-    expect(plan).not.toBeNull();
-    const residuals = plan?.residuals ?? [];
-    expect(residuals).toHaveLength(BF_GAPS.length);
-    for (const gap of residuals) {
-      expect(Math.abs(gap.residualMm), `gap ${gap.index}`).toBeLessThan(0.1);
+    expect(plan?.mode).toBe('axis-model');
+    plan?.positions.forEach((p, i) => {
+      expect(distance(p, truth[i] as vec3), `contact ${i + 1}`).toBeLessThan(0.15);
+    });
+    for (const gap of plan?.residuals ?? []) {
+      expect(Math.abs(gap.residualMm), `gap ${gap.index}`).toBeLessThan(0.15);
       expect(gap.flagged).toBe(false);
     }
-    // The template landed on the metal, so every contact is within a fraction of a millimetre of
-    // where the lead really is — including contact 2, which the 5.5 mm re-spacing had 2.5 mm off.
-    plan?.positions.forEach((p, i) => {
-      expect(distance(p, truth[i] as vec3), `contact ${i + 1}`).toBeLessThan(0.1);
-    });
-    expect(plan?.peaked).toBe(truth.length);
-    expect(plan?.offAxisRejected).toBe(0);
+    for (const p of plan?.positions ?? []) {
+      expect(offAxisMm(plan!.fit, p)).toBeLessThan(1e-6);
+    }
   });
 
-  it('keeps the on-axis template position when the peak is another shaft’s metal', async () => {
-    const truth = offsets(RD_GAPS).map((t) => along(t));
-    // A neighbouring electrode 3 mm to the side, brighter to `peakCentroid` for one contact only.
-    const perp: vec3 = [-AXIS[1], AXIS[0], 0];
-    const norm = Math.hypot(perp[0], perp[1], perp[2]);
-    const intruder: vec3 = [
-      (truth[3] as vec3)[0] + (perp[0] / norm) * 2.5,
-      (truth[3] as vec3)[1] + (perp[1] / norm) * 2.5,
-      (truth[3] as vec3)[2] + (perp[2] / norm) * 2.5,
-    ];
-    const peak: PeakFn = (world, radiusMm) => {
-      if (distance(world, intruder) <= radiusMm) return [...intruder] as vec3;
-      return peakAt(truth)(world, radiusMm);
-    };
-
-    const plan = await planModelSnap({
+  it('holds the template position where the image has no peak near it', async () => {
+    const truth = offsets(BF_GAPS).map((t) => along(t));
+    // Contact 5's metal is missing from the image entirely — an artefact-suppressed blob.
+    const visible = truth.filter((_p, i) => i !== 4);
+    const plan = await planAxisSnap({
       positionsTipFirst: truth,
-      gapsMm: RD_GAPS,
-      sample: brightAt(truth),
-      peak,
-      // Wide enough that the intruder is inside the box, which is the situation the refusal exists
-      // for: a big radius is what a user reaches for on a noisy CT.
-      snapRadiusMm: 3,
+      gapsMm: BF_GAPS,
+      sample: brightAt(visible),
+      peak: peakAt(visible),
+      snapRadiusMm: 1.5,
     });
+    expect(plan?.mode).toBe('axis-model');
+    // It did not jump into contact 4's or 6's blob: it stayed where the manufacturer says it is.
+    expect(distance(plan?.positions[4] as vec3, truth[4] as vec3)).toBeLessThan(0.3);
+  });
 
-    expect(plan?.offAxisRejected).toBe(1);
-    // Refused, so contact 4 sits on the template — not 2.5 mm sideways on the neighbour.
-    expect(distance(plan?.positions[3] as vec3, intruder)).toBeGreaterThan(2);
-    expect(distance(plan?.positions[3] as vec3, truth[3] as vec3)).toBeLessThan(0.1);
+  it('falls back to peakCentroid, projected onto the axis, on a host without sampleVolume', async () => {
+    const truth = offsets(RD_GAPS).map((t) => along(t));
+    const blobs = zigzag(truth, 0.5);
+    const plan = await planAxisSnap({
+      positionsTipFirst: truth,
+      gapsMm: null,
+      sample: null,
+      peak: peakAt(blobs),
+      snapRadiusMm: 1.5,
+    });
+    expect(plan).not.toBeNull();
+    // The peaks are off the line by up to 0.7 mm and the results are not: only the component along
+    // the rod survived the projection, which is the whole point.
+    for (const p of plan?.positions ?? []) {
+      expect(offAxisMm(plan!.fit, p)).toBeLessThan(1e-6);
+    }
   });
 
   it('answers null when the oracle has nothing to say, so nothing moves', async () => {
     const start = offsets(RD_GAPS).map((t) => along(t));
-    const plan = await planModelSnap({
+    const plan = await planAxisSnap({
       positionsTipFirst: start,
       gapsMm: RD_GAPS,
       // Every point outside the volume: `NaN`, which is what `sampleVolume` answers there.
-      sample: (points) => Promise.resolve(points.map(() => Number.NaN)),
+      sample: (points: readonly vec3[]) => Promise.resolve(points.map(() => Number.NaN)),
       peak: () => null,
       snapRadiusMm: 1.5,
     });
     expect(plan).toBeNull();
   });
 
-  it('needs two contacts before there is an axis to slide along', async () => {
-    const plan = await planModelSnap({
-      positionsTipFirst: [along(0)],
-      gapsMm: RD_GAPS,
-      sample: brightAt([along(0)]),
-      peak: peakAt([along(0)]),
+  it('needs three contacts before there is a rod to fit, so the caller can fall back', async () => {
+    const truth = [along(0), along(5)];
+    const plan = await planAxisSnap({
+      positionsTipFirst: truth,
+      gapsMm: null,
+      sample: brightAt(truth),
+      peak: peakAt(truth),
       snapRadiusMm: 1.5,
     });
     expect(plan).toBeNull();
+  });
+
+  it('measures the median pitch, which sizes the window and nothing else', () => {
+    expect(measuredPitchMm(offsets(RD_GAPS).map((t) => along(t)))).toBeCloseTo(5, 6);
+    // A BF lead's median is 5.5 mm — and its first gap is 3.0 mm, which is exactly why a median
+    // must never be used to re-space anything.
+    expect(measuredPitchMm(offsets(BF_GAPS).map((t) => along(t)))).toBeCloseTo(5.5, 6);
+    expect(measuredPitchMm([along(0)])).toBeNull();
   });
 });
 
