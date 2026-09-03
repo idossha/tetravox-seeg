@@ -2,6 +2,9 @@
 
 ## 0.2.0 — 2026-09-03
 
+Requires Tetravox 0.3.5 or newer: the QC exports and the axis snap use host capabilities (`scene.sampleVolume`,
+`files.writeBinary`, `capture.*`, `{derivatives}` writer targets) that older hosts do not have.
+
 - **Snap now puts a contact on its electrode's shaft, not beside it.** A depth electrode is one rigid
   rod, so its contacts are collinear by construction — and until now every contact snapped to its own
   blob's intensity-weighted centroid, independently of its neighbours. On P073 that made the contacts
