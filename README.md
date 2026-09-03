@@ -208,15 +208,19 @@ The panel's **QC export** section writes three figures plus a spacing table, to
 | `sub-<id>_desc-spacing_qc.svg`                | A histogram of consecutive-contact 3-D distances, with one dashed line per electrode model's nominal pitch |
 | `sub-<id>_desc-spacing_qc.tsv`                | The distances behind the histogram: `electrode`, `contact_a`, `contact_b`, `distance_mm` |
 | `sub-<id>_desc-reslice_qc.png`                | Every electrode's shaft-axis plane, T1 in grey with a CT bone overlay, tiled 3 to a row |
-| `sub-<id>_desc-implant3d_qc.png`              | A capture of the 3-D view with a colour legend |
+| `sub-<id>_desc-implant3d_qc.png`              | Four angles (superior, left, right, anterior) tiled 2×2, with a colour legend |
 
 A `derivatives/tetravox/dataset_description.json` marks the folder as a BIDS derivative, written once
 if it is not already there.
 
-**The 3-D implant figure is one capture, not the four angles (superior/left/right/anterior) originally
-planned**: Tetravox has no way yet for a module to aim the 3-D camera before a screenshot, so the
-figure is whatever the 3-D view is showing when you export. `src/qc/implant3d.ts` is written so a
-future camera-control host API only changes how many captures are taken, not how a tile is drawn.
+**The 3-D implant figure rotates the camera through four RAS presets** — superior, left, right,
+anterior, in that order, via `host.capture.setView` (Tetravox PR #18) — and screenshots each one.
+There is no camera-restore API, so once the four shots are in hand the module sets the view back to
+`superior` and leaves it there; your 3-D view will be at the superior preset after an export, not
+wherever it was before. On a host built before PR #18 (no `capture.setView`), the export falls back
+to a single capture of whatever the 3-D view already shows and shows a toast noting only the current
+view was captured — `src/qc/implant3d.ts`'s `captureImplant3dViews` owns this behaviour and its
+degraded-host fallback.
 
 ### Scenes, and a build without the module
 

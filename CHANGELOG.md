@@ -10,9 +10,14 @@
   `derivatives/tetravox/dataset_description.json` marking the folder as a BIDS derivative, written
   once if it is not already there. The spacing histogram draws one dashed nominal-pitch line per
   electrode model present, from the table's own `model` column or `seegprep`'s geometry sidecar.
-  **The 3-D implant figure is a single capture, not the four angles originally planned**: the host
-  has no camera-control call yet, so there is no way to aim the 3-D view before each shot (see
-  `src/qc/implant3d.ts`).
+  **The 3-D implant figure now captures all four angles.** `host.capture.setView` (Tetravox PR #18)
+  rotates the 3-D view to superior, left, right and anterior in turn — `fit: true` only on the first,
+  since a reset-view need only run once — and each is screenshotted and tiled 2×2 with the electrode
+  legend. There is no camera-restore call in the host API, so once the four shots are taken the module
+  sets the view back to `superior` and leaves it there rather than the angle you had before exporting.
+  On a host built before PR #18 (no `capture.setView`), the export falls back to a single capture of
+  whatever the 3-D view is already showing and warns via toast that only the current view was
+  captured (`src/qc/implant3d.ts`'s `captureImplant3dViews`).
 - **The corrected table's default save location moved** to
   `derivatives/tetravox/sub-<id>/ieeg/sub-<id>_space-<space>_electrodes_corrected.tsv` (and its
   matching `..._corrected_editlog.json`), away from writing back over `seegprep`'s own output. A

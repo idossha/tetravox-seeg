@@ -84,6 +84,7 @@ import {
   FROM_ANCHOR_QC_SPACING_TSV,
 } from './qc/paths';
 import { buildResliceTiles, compositeReslice, ensureDatasetDescription } from './qc/export';
+import { captureImplant3dViews, compositeImplant3d, legendOf } from './qc/implant3d';
 import { spacingHistogramSvg } from './qc/histogram';
 import { spacingTsv } from './qc/tsv';
 
@@ -1167,15 +1168,45 @@ export function createModel(host: ModuleHost): SeegModel {
     }
   };
 
-  // Single capture, not the four-angle tiling the spec asked for: `host.ts` (PR #18) has no
-  // camera-control call, so there is no way to aim the 3-D view before each shot. See
-  // `qc/implant3d.ts`'s header for what changes once one ships.
+  /**
+   * Four angles (superior/left/right/anterior), each shot after `host.capture.setView` rotates the
+   * 3-D view (host PR #18) — `qc/implant3d.ts`'s `captureImplant3dViews` owns the setView/screenshot
+   * sequence and is what the tests below exercise. On an older host without `setView`, it falls back
+   * to one capture of the current view and reports `degraded: true`, which is surfaced here as a
+   * toast rather than failing the export. Either way the four (or one) PNGs are decoded and tiled by
+   * `compositeImplant3d`, which needs `OffscreenCanvas`/`createImageBitmap` — unavailable outside a
+   * real host, hence the `no-canvas` guard shared with the reslice export.
+   */
   const doExportImplant3dPng = async (folderOverride: string | null): Promise<QcOutcome> => {
     const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? 'implant3d_qc.png')}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
     if (pngPath === null) return 'no-derivatives';
+    if (typeof OffscreenCanvas === 'undefined') return 'no-canvas';
     try {
-      const png = await host.capture.screenshot({ target: 'view', background: 'theme' });
-      const written = await host.files.writeBinary(pngPath, png, { backup: true });
+      const { tiles, degraded } = await captureImplant3dViews(host.capture, { background: 'theme' });
+      if (degraded) {
+        host.ui.toast(
+          'warn',
+          'sEEG: this host has no camera control yet, so only the current 3-D view was captured.'
+        );
+      }
+      const bitmaps = await Promise.all(
+        tiles.map(async (tile) => ({
+          label: tile.label,
+          bitmap: await createImageBitmap(new Blob([tile.png.slice()])),
+        }))
+      );
+      const tileW = 320;
+      const tileH = 280;
+      const columns = Math.min(2, Math.max(1, bitmaps.length));
+      const rows = Math.ceil(bitmaps.length / columns);
+      const legend = legendOf(set.groups);
+      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows + legend.length * 14 + 24);
+      const ctx = canvas.getContext('2d');
+      if (ctx === null) return 'error';
+      compositeImplant3d(ctx, bitmaps, legend, tileW, tileH);
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const written = await host.files.writeBinary(pngPath, bytes, { backup: true });
       return written.ok ? 'ok' : 'error';
     } catch {
       return 'error';
