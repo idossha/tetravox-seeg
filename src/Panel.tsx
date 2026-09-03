@@ -209,6 +209,10 @@ function ModelSection({
     };
   const model = view.model;
   const incomplete = model !== null && model.present < model.expected;
+  // A `sidecar-measured` geometry is this shaft's own median pitch repeated — seegprep's stand-in
+  // when *its* catalogue matched nothing — not a manufacturer's vector. It is worth snapping to and
+  // worth measuring against, and it must never be read as a datasheet, so it is named as what it is.
+  const measured = model?.source === 'sidecar-measured';
 
   return (
     <div
@@ -226,14 +230,19 @@ function ModelSection({
               ? 'No geometry sidecar entry, and no model column or part number the catalogue recognises'
               : model.source === 'sidecar'
                 ? 'from this subject’s seegprep geometry sidecar'
-                : 'from the bundled seegprep catalogue, matched on the part number'
+                : measured
+                  ? 'seegprep matched no model either, so this is the shaft’s own measured median ' +
+                    'pitch repeated — a nominal to compare against, not a manufacturer’s geometry'
+                  : 'from the bundled seegprep catalogue, matched on the part number'
           }
         >
           {model === null ? (
             <span className="text-tvx-dim">no model — Re-fit uses the observed median gap</span>
           ) : (
             <>
-              <span className="text-tvx-text">{model.name}</span>{' '}
+              <span className={measured ? 'text-tvx-warn' : 'text-tvx-text'}>
+                {measured ? 'measured pitch' : model.name}
+              </span>{' '}
               <span className="text-tvx-dim">· {model.source}</span>
             </>
           )}
@@ -270,7 +279,9 @@ function ModelSection({
           title={
             model === null
               ? 'This electrode has no model to snap to'
-              : `Fit the shaft, slide a ${model.name} template onto the brightest metal, then snap each contact (⇧F)`
+              : measured
+                ? 'Fit the shaft, slide its own measured spacing onto the brightest metal, then snap each contact (⇧F)'
+                : `Fit the shaft, slide a ${model.name} template onto the brightest metal, then snap each contact (⇧F)`
           }
           onClick={command('snap-model')}
         >
@@ -295,7 +306,7 @@ function ModelSection({
             model === null
               ? 'This electrode has no model, so there is no count to extend to'
               : incomplete
-                ? `Place the ${model.expected - model.present} missing contacts beyond the entry end at the model’s spacing (asks first)`
+                ? `Place the ${model.expected - model.present} missing contacts beyond the entry end at the ${measured ? 'measured' : 'model’s'} spacing (asks first)`
                 : 'This electrode already has every contact its model has'
           }
           onClick={command('extend')}

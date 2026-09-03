@@ -43,8 +43,18 @@ const { contactsOf, distanceMm, fitLine } = contacts;
 
 // ---- what a resolved model is -------------------------------------------------------------------
 
-/** Where a group's geometry came from. `'none'` is not represented — that is a `null` model. */
-export type ModelSource = 'sidecar' | 'catalogue';
+/**
+ * Where a group's geometry came from. `'none'` is not represented — that is a `null` model.
+ *
+ * `'sidecar-measured'` is the honest third answer, and it exists because seegprep's sidecar always
+ * states a `spacing_gaps_mm`: when its own catalogue matched nothing it writes `model: "n/a"` and
+ * fills the vector with **this shaft's measured median pitch, repeated**, so that a QC consumer
+ * always has a nominal to compare against. That is a useful number and it is emphatically not a
+ * manufacturer's geometry — a Behnke-Fried lead's measured median is 5.5 mm and its first gap is
+ * 3.0 mm — so it is labelled differently, ranked below a real catalogue match, and shown to the user
+ * as what it is.
+ */
+export type ModelSource = 'sidecar' | 'sidecar-measured' | 'catalogue';
 
 export interface ElectrodeModel {
   /** The model key, as the source spelled it. */
@@ -56,12 +66,23 @@ export interface ElectrodeModel {
   source: ModelSource;
 }
 
-/** One electrode's row of a seegprep `_electrodes-geometry.json` sidecar. */
+/**
+ * One electrode's row of a seegprep `_electrodes-geometry.json` sidecar.
+ *
+ * `model` is `null` for seegprep's own `"n/a"` — the string it writes when *its* catalogue matched
+ * nothing. Read literally, `"n/a"` would be reported to the user as an electrode model called n/a
+ * and would stop the resolver looking anywhere else; `null` is what it means.
+ *
+ * When `model` is `null` and `gapsMm` is not, the gaps are the shaft's **measured** median pitch
+ * repeated (see {@link ModelSource}), not a manufacturer's vector.
+ */
 export interface GeometrySidecarEntry {
   model: string | null;
   contactLengthMm: number | null;
   /** The per-gap spacing the sidecar states, or `null` when it states none. */
   gapsMm: number[] | null;
+  /** `n_contacts` as the sidecar states it, when it does. */
+  nContacts: number | null;
 }
 
 /** Everything the module has been able to learn about which electrodes these are. */
@@ -118,11 +139,18 @@ export function resolveElectrodeModel(
   const sidecar = sources.sidecar?.get(group) ?? null;
   const declared = sources.declaredCounts?.get(group) ?? null;
 
-  if (sidecar !== null && sidecar.gapsMm !== null && sidecar.gapsMm.length > 0) {
+  const sidecarGaps =
+    sidecar !== null && sidecar.gapsMm !== null && sidecar.gapsMm.length > 0
+      ? sidecar.gapsMm
+      : null;
+
+  // A sidecar that both names a model and states its gaps is the most specific source there is: it
+  // was written for *this* implant, by the program that also wrote the table.
+  if (sidecar !== null && sidecar.model !== null && sidecarGaps !== null) {
     return {
-      model: sidecar.model ?? group,
-      nContacts: sidecar.gapsMm.length + 1,
-      gapsMm: [...sidecar.gapsMm],
+      model: sidecar.model,
+      nContacts: sidecarGaps.length + 1,
+      gapsMm: [...sidecarGaps],
       ...(sidecar.contactLengthMm === null ? {} : { contactLengthMm: sidecar.contactLengthMm }),
       source: 'sidecar',
     };
@@ -141,6 +169,29 @@ export function resolveElectrodeModel(
       gapsMm: expandGaps([...entry.gapsMm], (declared ?? 0) > entry.nContacts ? (declared as number) : entry.nContacts),
       ...(entry.contactLengthMm === undefined ? {} : { contactLengthMm: entry.contactLengthMm }),
       source: 'catalogue',
+    };
+  }
+
+  /*
+   * Last: the sidecar's measured stand-in, ranked **below** the catalogue on purpose.
+   *
+   * seegprep writes `model: "n/a"` with the shaft's measured median pitch repeated whenever its own
+   * catalogue matched nothing — but *this* module may still know the model, because the table's
+   * `model` column and a site part number are keys seegprep never saw. A manufacturer's vector beats
+   * a measured median every time, and for the family that motivates this whole file it is the
+   * difference between a 3.0 mm first gap and a 5.5 mm one.
+   *
+   * Taken on its own it is still worth having: it is a per-electrode number to snap and to measure
+   * against rather than none at all, it is what the panel's per-gap table is filled from, and it is
+   * labelled `sidecar-measured` everywhere it is shown so nobody reads it as a datasheet.
+   */
+  if (sidecarGaps !== null) {
+    return {
+      model: 'measured',
+      nContacts: sidecar?.nContacts ?? sidecarGaps.length + 1,
+      gapsMm: expandGaps([...sidecarGaps], sidecar?.nContacts ?? sidecarGaps.length + 1),
+      ...(sidecar?.contactLengthMm == null ? {} : { contactLengthMm: sidecar.contactLengthMm }),
+      source: 'sidecar-measured',
     };
   }
   return null;
@@ -174,14 +225,32 @@ function gapsOrNull(value: unknown): number[] | null {
   return gaps.every((g): g is number => g !== null && g > 0) ? gaps : null;
 }
 
+/**
+ * seegprep's `"n/a"` — the string it writes for `model` when its own catalogue matched nothing —
+ * read as the absence it is.
+ *
+ * Taken literally it would be shown to a clinician as an electrode model called *n/a*, and it would
+ * stop the resolver looking anywhere else: `"n/a"` is a non-empty string, so a naive reader treats
+ * it as an answer. It is not an answer, and the table's `model` column may hold a real one.
+ */
+function modelOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const model = value.trim();
+  if (model === '') return null;
+  const lower = model.toLowerCase();
+  return lower === 'n/a' || lower === 'na' || lower === 'none' || lower === 'unknown'
+    ? null
+    : model;
+}
+
 function sidecarRow(raw: unknown): GeometrySidecarEntry | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
-  const model = row['model'];
   const entry: GeometrySidecarEntry = {
-    model: typeof model === 'string' && model !== '' ? model : null,
+    model: modelOrNull(row['model']),
     contactLengthMm: numberOrNull(row['contact_length_mm']),
     gapsMm: gapsOrNull(row['spacing_gaps_mm']),
+    nContacts: numberOrNull(row['n_contacts']),
   };
   return entry.model === null && entry.gapsMm === null && entry.contactLengthMm === null
     ? null
@@ -191,12 +260,18 @@ function sidecarRow(raw: unknown): GeometrySidecarEntry | null {
 /**
  * `sub-<id>_electrodes-geometry.json` (seegprep PR #2) as a map from electrode name to geometry.
  *
- * Deliberately forgiving about the envelope, and strict about the numbers. Three shapes are read —
- * a bare object keyed by electrode name, the same under an `electrodes` key, and an array of rows
- * each naming itself — because the sidecar is another program's file and this module is a reader of
- * it, not its schema. What is *not* forgiving: a `spacing_gaps_mm` that is not a list of positive
- * finite numbers is discarded rather than repaired, and the electrode falls through to the
- * catalogue. A geometry half-read is a template slid onto the wrong metal.
+ * **The shape seegprep actually writes** (`seegprep/core/characterize.py`, `geometry_summary` and
+ * `electrode_geometry`) is a top-level object of detection tallies plus an `electrodes` **array**,
+ * each row of which names itself with **`electrode_id`** and carries `n_contacts`, `coords_ras`,
+ * `median_spacing_mm`, and the three keys this module wants: `model`, `contact_length_mm` and
+ * `spacing_gaps_mm`. That is the shape to read first; two others — a bare object keyed by electrode
+ * name, and the same object under `electrodes` — are read as well, because the sidecar is another
+ * program's file and this module is a reader of it, not its schema.
+ *
+ * What is *not* forgiving: a `spacing_gaps_mm` that is not a list of positive finite numbers is
+ * discarded rather than repaired, and the electrode falls through to the catalogue. A geometry
+ * half-read is a template slid onto the wrong metal. And `model: "n/a"` is read as no model at all
+ * (see {@link modelOrNull}), which is what it means.
  *
  * Returns an empty map for anything unreadable, so a corrupt sidecar is "no sidecar".
  */
@@ -216,7 +291,9 @@ export function parseGeometrySidecar(text: string): Map<string, GeometrySidecarE
     for (const raw of body) {
       if (typeof raw !== 'object' || raw === null) continue;
       const row = raw as Record<string, unknown>;
-      const name = row['name'] ?? row['electrode'] ?? row['group'];
+      // `electrode_id` first: it is the key seegprep writes. The rest are fallbacks for a sidecar
+      // written by something else, and cost nothing.
+      const name = row['electrode_id'] ?? row['name'] ?? row['electrode'] ?? row['group'];
       const entry = sidecarRow(row);
       if (typeof name === 'string' && name !== '' && entry !== null) out.set(name, entry);
     }

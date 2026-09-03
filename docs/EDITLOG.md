@@ -72,6 +72,15 @@ the log afterwards:
 `model` is stated even when `snap_mode` is `"free"`, because "we knew which electrode this was and
 snapped it freely anyway" and "we never knew" are different states of the record.
 
+### `"measured"` is a value `model` can take
+
+seegprep's geometry sidecar always writes a `spacing_gaps_mm`; when its own catalogue matched nothing
+it writes `model: "n/a"` and fills that vector with the shaft's measured median pitch, repeated. This
+module reads `"n/a"` as no model, tries the catalogue with the keys seegprep never saw, and only then
+falls back to that vector — recording the model as the literal string `"measured"`. It is never a
+part number, so a reader can tell a snap onto a manufacturer's grid from a snap onto the shaft's own
+average without knowing this module's internals.
+
 ### Where they are written
 
 In this module (`src/editor.ts`, `withModelFields`), not in the shared kit — a model is a fact about

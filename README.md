@@ -157,11 +157,21 @@ and 2 and **5.5 mm** from there out; Re-fit, which re-spaces at the shaft's own 
 that into a uniform 5.5 mm and leaves contact 2 two and a half millimetres off the metal it is
 inside. So the panel has a model section, and it looks in three places in this order:
 
-| Where                                                   | What it gives                                       |
-| ------------------------------------------------------- | --------------------------------------------------- |
-| `sub-<id>_electrodes-geometry.json` beside the table    | this subject's own per-electrode gaps, from seegprep |
-| the bundled gap table, keyed by a model or part number   | the manufacturer's geometry for that model           |
-| nothing                                                  | today's behaviour: Re-fit's observed median gap      |
+| Where                                                       | What it gives                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------ |
+| `sub-<id>_electrodes-geometry.json`, where it names a model | this subject's own per-electrode gaps, from seegprep    |
+| the bundled gap table, keyed by a model or part number       | the manufacturer's geometry for that model             |
+| that sidecar's `model: "n/a"` rows                           | the shaft's **measured** median pitch, labelled as such |
+| nothing                                                      | today's behaviour: Re-fit's observed median gap        |
+
+The third row needs saying. seegprep's sidecar always states a `spacing_gaps_mm`: when *its*
+catalogue matched nothing it writes `model: "n/a"` and fills the vector with the shaft's own median
+pitch repeated, so a QC reader always has a nominal to compare against. That is a useful number and
+it is emphatically **not** a datasheet — a Behnke-Fried lead's measured median is 5.5 mm and its
+first gap is 3.0 mm. So the module reads `"n/a"` as *no model* (a model called "n/a" is not a thing
+to show a clinician, and reading it literally would stop the search), consults the catalogue with the
+keys seegprep never saw — the table's `model` column, a site part number — and only then falls back
+to the measured vector, shown as **measured pitch · sidecar-measured** rather than as a part number.
 
 The key is the table's own `model` column, or a part number from the site's electrode list, matched
 as a **case-insensitive prefix** — `BF10R-SP21X-0C3` finds `BF10R-SP21X`, so nobody has to know which

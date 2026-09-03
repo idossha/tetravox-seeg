@@ -21,11 +21,17 @@
   hand. That is where a localiser loses them: the deep contacts sit in brain and are easy, the shallow
   ones sit in the skull's own brightness and are not.
 - **Where the geometry comes from**, most specific first: this subject's `seegprep`
-  `sub-<id>_electrodes-geometry.json` sidecar, then a gap table for 44 electrode models bundled from
+  `sub-<id>_electrodes-geometry.json` sidecar where it names a model, then a gap table for 44 electrode models bundled from
   `seegprep`'s own catalogue and keyed by the table's `model` column or a site part number
   (`BF10R-SP21X-0C3` finds `BF10R-SP21X`), then **nothing** — and nothing is a supported state, not a
   failure. With no model resolved the module behaves exactly as it did before: Re-fit re-spaces at the
   observed median gap, and the panel says so instead of pretending.
+  - seegprep's sidecar always states a spacing, and writes `model: "n/a"` with the shaft's own
+    measured median pitch repeated when *its* catalogue matched nothing. That is read as **no model**
+    — the table's `model` column may still hold a real one, which seegprep never saw — and if nothing
+    else knows either, the measured vector is used and shown as **measured pitch · sidecar-measured**
+    rather than as a part number. A Behnke-Fried lead's measured median is 5.5 mm and its first gap
+    is 3.0 mm; the two must not be printed as though they were the same kind of number.
   - **List…** in the model section reads a site electrode list
     (`name,target,part_number,n_contacts,…`) for its part numbers. It is a file sheet rather than an
     automatic discovery because the list lives four directories above the derivative's `ieeg/` and a

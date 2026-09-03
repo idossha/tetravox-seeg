@@ -54,6 +54,7 @@ import type {
   ElectrodeModel,
   GapResidual,
   GeometrySidecarEntry,
+  ModelSource,
   ModelSources,
   PeakFn,
   SampleFn,
@@ -181,6 +182,8 @@ export interface SeegRow {
  * different fault from one contact that landed between two, and a table of absolute values hides
  * which. `flagged` is `|residual| > 0.75 mm`, which is about a third of a contact length.
  */
+export type { ModelSource };
+
 export interface SeegGapRow {
   /** The gap between contact `index` and contact `index + 1`, 1-based, tip-first. */
   index: number;
@@ -192,9 +195,9 @@ export interface SeegGapRow {
 
 /** What the panel's model section shows for the selected electrode. */
 export interface SeegModelView {
-  /** The model key, as its source spelled it. */
+  /** The model key, as its source spelled it — or `'measured'` for a `sidecar-measured` geometry. */
   name: string;
-  source: 'sidecar' | 'catalogue';
+  source: ModelSource;
   /** How many contacts the model says this electrode has. */
   expected: number;
   /** How many the table actually carries. */
@@ -238,7 +241,7 @@ export interface SeegView {
   /** How many electrodes in the whole set have a model — what "Snap all to model" would touch. */
   modelledElectrodes: number;
   /** Where the module found geometry at all, for the section's one-line provenance. */
-  modelSource: 'sidecar' | 'catalogue' | 'none';
+  modelSource: ModelSource | 'none';
   tipName: string | null;
   /** The selected electrode's shaft sketch, or `null` when nothing is selected. */
   diagram: ShaftDiagram | null;
@@ -1119,7 +1122,7 @@ export function createModel(host: ModuleHost): SeegModel {
   interface ModelSnapReport {
     electrode: string;
     model: string | null;
-    source: 'sidecar' | 'catalogue' | null;
+    source: ModelSource | null;
     moved: number;
     meanShiftMm: number;
     /** How many peaks were refused for landing more than 1 mm off the fitted axis. */
@@ -1348,8 +1351,12 @@ export function createModel(host: ModuleHost): SeegModel {
             : ` ${report.offAxisRejected} peaks were off the rod and refused.`;
         const flags =
           report.flagged === 0 ? '' : ` ${report.flagged} gaps are off by more than 0.75 mm.`;
+        const what =
+          report.source === 'sidecar-measured'
+            ? 'its own measured spacing'
+            : (report.model ?? 'its model');
         return (
-          `Snapped ${report.moved} contacts on ${report.electrode} to ${report.model}, mean ` +
+          `Snapped ${report.moved} contacts on ${report.electrode} to ${what}, mean ` +
           `${report.meanShiftMm.toFixed(2)} mm.${off}${flags}` +
           (asked > 1 ? '' : '')
         );

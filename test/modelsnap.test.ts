@@ -178,6 +178,128 @@ describe('resolveElectrodeModel', () => {
   });
 });
 
+
+/**
+ * The envelope `seegprep` actually writes, copied from `seegprep/core/characterize.py`
+ * (`geometry_summary` + `electrode_geometry`): top-level detection tallies plus an `electrodes`
+ * **array**, each row naming itself with `electrode_id`.
+ *
+ * Two rows, because the two cases are different files as far as this module is concerned: L-HIP
+ * matched seegprep's catalogue (a real `model`, the catalogue's per-gap vector), and L-AMY did not
+ * — so seegprep wrote `model: "n/a"` and filled `spacing_gaps_mm` with the shaft's own
+ * `median_spacing_mm`, repeated, which is a nominal to compare against and is *not* a datasheet.
+ */
+const SEEGPREP_SIDECAR = JSON.stringify({
+  n_candidate_contacts: 214,
+  n_assigned: 18,
+  n_unassigned: 4,
+  n_electrodes: 2,
+  spacing_estimate_mm: 5.0,
+  params: { spacing_tol_mm: 1.5 },
+  electrodes: [
+    {
+      electrode_id: 'L-HIP',
+      n_contacts: 10,
+      n_raw: 12,
+      n_trimmed_bolt: 2,
+      contact_cids: [],
+      coords_ras: [
+        [10, -20, 30],
+        [11.8, -18.56, 31.92],
+      ],
+      trimmed_ras: [],
+      axis: [0.6, 0.48, 0.64],
+      median_spacing_mm: 5.5,
+      spacing_cv: 0.11,
+      line_rms_mm: 0.21,
+      line_max_dev_mm: 0.4,
+      tip_ras: [10, -20, 30],
+      entry_ras: [37.2, -0.24, 59.04],
+      model: 'BF10R-SP21X',
+      contact_length_mm: 1.57,
+      spacing_gaps_mm: [3, 5.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.5],
+    },
+    {
+      electrode_id: 'L-AMY',
+      n_contacts: 8,
+      n_raw: 8,
+      n_trimmed_bolt: 0,
+      contact_cids: [],
+      coords_ras: [[0, 0, 0]],
+      trimmed_ras: [],
+      axis: [1, 0, 0],
+      median_spacing_mm: 4.982,
+      spacing_cv: 0.04,
+      line_rms_mm: 0.18,
+      line_max_dev_mm: 0.3,
+      tip_ras: [0, 0, 0],
+      entry_ras: [34.87, 0, 0],
+      // seegprep's own catalogue matched nothing: "n/a", and the gaps are the measured median
+      // repeated to n_contacts − 1.
+      model: 'n/a',
+      contact_length_mm: null,
+      spacing_gaps_mm: [4.982, 4.982, 4.982, 4.982, 4.982, 4.982, 4.982],
+    },
+  ],
+});
+
+describe('the sidecar seegprep really writes', () => {
+  it('names each row by electrode_id, inside the electrodes array', () => {
+    const rows = parseGeometrySidecar(SEEGPREP_SIDECAR);
+    expect([...rows.keys()]).toEqual(['L-HIP', 'L-AMY']);
+    expect(rows.get('L-HIP')?.model).toBe('BF10R-SP21X');
+    expect(rows.get('L-HIP')?.contactLengthMm).toBe(1.57);
+    expect(rows.get('L-HIP')?.nContacts).toBe(10);
+    // The top-level tallies and `params` are not electrodes, and reading the array means they never
+    // had a chance to become one.
+    expect(rows.has('params')).toBe(false);
+    expect(rows.has('n_electrodes')).toBe(false);
+  });
+
+  it('reads seegprep’s "n/a" as no model at all, not as a model called n/a', () => {
+    const rows = parseGeometrySidecar(SEEGPREP_SIDECAR);
+    // Taken literally this would be shown to a clinician as an electrode model named "n/a", and
+    // would stop the resolver from ever consulting the table's own `model` column.
+    expect(rows.get('L-AMY')?.model).toBeNull();
+    expect(rows.get('L-AMY')?.gapsMm).toHaveLength(7);
+    expect(rows.get('L-AMY')?.contactLengthMm).toBeNull();
+  });
+
+  it('takes the sidecar’s per-gap vector for the electrode seegprep did match', () => {
+    const model = resolveElectrodeModel('L-HIP', {
+      sidecar: parseGeometrySidecar(SEEGPREP_SIDECAR),
+    });
+    expect(model?.source).toBe('sidecar');
+    expect(model?.model).toBe('BF10R-SP21X');
+    expect(model?.gapsMm).toEqual(BF_GAPS);
+    expect(model?.nContacts).toBe(10);
+  });
+
+  it('lets a table’s model column beat the n/a row’s measured pitch', () => {
+    // The point of reading "n/a" as absence: seegprep never saw the table's `model` column, so a
+    // real manufacturer's vector is still available and is strictly better than a repeated median.
+    const model = resolveElectrodeModel('L-AMY', {
+      sidecar: parseGeometrySidecar(SEEGPREP_SIDECAR),
+      tableModels: new Map([['L-AMY', 'RD10R-SP05X']]),
+    });
+    expect(model?.source).toBe('catalogue');
+    expect(model?.model).toBe('RD10R-SP05X');
+  });
+
+  it('falls back to the measured pitch, labelled as measured, when nothing else knows', () => {
+    const model = resolveElectrodeModel('L-AMY', {
+      sidecar: parseGeometrySidecar(SEEGPREP_SIDECAR),
+    });
+    expect(model?.source).toBe('sidecar-measured');
+    // Named `measured`, never a part number: the panel prints this and nobody may read it as a
+    // datasheet.
+    expect(model?.model).toBe('measured');
+    expect(model?.nContacts).toBe(8);
+    expect(model?.gapsMm).toEqual([4.982, 4.982, 4.982, 4.982, 4.982, 4.982, 4.982]);
+    expect(model?.contactLengthMm).toBeUndefined();
+  });
+});
+
 describe('parseGeometrySidecar', () => {
   it('reads the three envelopes seegprep might write, and only the numbers it can trust', () => {
     const flat = parseGeometrySidecar(JSON.stringify({ A: { spacing_gaps_mm: [3, 5.5] } }));
