@@ -1,6 +1,6 @@
 {
   "name": "tetravox-seeg",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "tetravox.seeg — the sEEG contact editor, as a downloadable Tetravox extension.",
@@ -19,14 +19,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "build": "rollup -c && node scripts/emit-manifest.mjs",
-    "check": "node scripts/check-bundle.mjs && node scripts/validate-manifest.mjs",
+    "check": "node scripts/check-bundle.mjs && node scripts/validate-manifest.mjs && node scripts/gen-catalogue.mjs --check",
     "sideload": "pnpm run build && node scripts/sideload.mjs",
     "verify": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-typescript": "^12.1.4",
-    "@tetravox/module-sdk": "file:vendor/tetravox-module-sdk-1-0.3.1.tgz",
+    "@tetravox/module-sdk": "file:vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz",
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "react": "^19.2.8",
