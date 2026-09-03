@@ -5,9 +5,9 @@
  * contacts 1 and 2 and `5.5` mm from there out — because it is the electrode the *old* behaviour
  * gets wrong: re-spacing at the observed median gap puts contact 2 two and a half millimetres off
  * the metal it is inside, and every number the panel then prints about that shaft is
- * self-consistent and wrong. So the assertion that matters is the first one: from a start shifted
- * 2 mm along the axis, the template locks back onto the true offset and the residuals are under
- * 0.1 mm.
+ * self-consistent and wrong. The template is a check rather than a mover, so the two assertions are
+ * a pair: a lead started near its own metal comes out at the model's own gaps, and one started on
+ * the wrong blobs stays on the metal it found and flags it.
  *
  * The oracles are synthetic and **not** a re-implementation of the engine: `sampleVolume` here is a
  * Gaussian bump at each true contact position and `peakCentroid` answers with the nearest true
@@ -430,11 +430,40 @@ function zigzag(truth: readonly vec3[], amplitudeMm: number): vec3[] {
   });
 }
 
+/**
+ * Blobs as a CT shows them: up to 0.7 mm off the rod, and a couple of tenths along it.
+ *
+ * The along-axis jitter is the part that matters here — it is the information the snap must keep,
+ * where the sideways part is the part it must throw away.
+ */
+function jitteredBlobs(truth: readonly vec3[]): vec3[] {
+  const perp: vec3 = [-AXIS[1], AXIS[0], 0];
+  const norm = Math.hypot(perp[0], perp[1], perp[2]);
+  return truth.map((p, i) => {
+    const side = ((i % 2 === 0 ? 1 : -1) * (0.3 + 0.1 * (i % 5))) / norm;
+    const step = 0.2 * [1, -1, 0.5][i % 3]!;
+    return [
+      p[0] + perp[0] * side + AXIS[0] * step,
+      p[1] + perp[1] * side + AXIS[1] * step,
+      p[2] + perp[2] * side + AXIS[2] * step,
+    ] as vec3;
+  });
+}
+
+/** `t` of `p` along a fit's line — the projection the snap's contract is stated in. */
+function tAlong(fit: { axis: vec3; centroid: vec3 }, p: vec3): number {
+  return (
+    (p[0] - fit.centroid[0]) * fit.axis[0] +
+    (p[1] - fit.centroid[1]) * fit.axis[1] +
+    (p[2] - fit.centroid[2]) * fit.axis[2]
+  );
+}
+
 describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
-  it('puts every contact exactly on the fitted axis, though every blob is off it', async () => {
+  it('puts each contact at its blob centroid’s projection, and nowhere off the line', async () => {
     const truth = offsets(RD_GAPS).map((t) => along(t));
-    // The blobs the CT actually shows: up to 0.7 mm to the side, alternating — the zigzag itself.
-    const blobs = zigzag(truth, 0.5);
+    // The blobs the CT actually shows: up to 0.7 mm to the side, and a couple of tenths along.
+    const blobs = jitteredBlobs(truth);
     // What the localiser handed over: the contacts a few tenths off, as a hand-placed set is.
     const start = truth.map((p, i) => [p[0] + 0.2 * (i % 2 ? 1 : -1), p[1], p[2] - 0.15] as vec3);
 
@@ -448,20 +477,13 @@ describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.mode).toBe('axis');
-    const fit = plan?.fit;
-    // The promise the drag guide's line makes: the contacts are ON it, to float error.
-    for (const [i, p] of (plan?.positions ?? []).entries()) {
-      expect(offAxisMm(fit!, p), `contact ${i + 1} off the axis`).toBeLessThan(1e-6);
-    }
-    // And the along-axis positions are the profile peaks: a blob's lateral offset does not move
-    // where along the rod it is, so each contact lands in its own blob's plane.
+    const fit = plan!.fit;
     (plan?.positions ?? []).forEach((p, i) => {
-      const t = truth[i] as vec3;
-      const along =
-        (p[0] - t[0]) * (fit as { axis: vec3 }).axis[0] +
-        (p[1] - t[1]) * (fit as { axis: vec3 }).axis[1] +
-        (p[2] - t[2]) * (fit as { axis: vec3 }).axis[2];
-      expect(Math.abs(along), `contact ${i + 1} along the axis`).toBeLessThan(0.05);
+      // The promise the drag guide's line makes: the contacts are ON it, to float error.
+      expect(offAxisMm(fit, p), `contact ${i + 1} off the axis`).toBeLessThan(1e-6);
+      // And along it they are exactly the blob centroid's projection — the 0.2 mm of along-axis
+      // jitter is measured metal and survives; the 0.7 mm sideways does not.
+      expect(tAlong(fit, p) - tAlong(fit, blobs[i] as vec3), `contact ${i + 1}`).toBeCloseTo(0, 6);
     });
   });
 
@@ -481,11 +503,10 @@ describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
     for (const gap of gaps) expect(Math.abs(gap - 5)).toBeLessThan(0.1);
   });
 
-  it('regularises by the model: a Behnke-Fried lead keeps its 3.0 mm first gap', async () => {
+  it('keeps a Behnke-Fried lead’s 3.0 mm first gap, from a start near its own metal', async () => {
     const truth = offsets(BF_GAPS).map((t) => along(t));
-    // The start the old Re-fit produces: evenly re-spaced at the median 5.5 mm, so contact 2 is
-    // 2.5 mm off the metal it is inside — and the whole shaft 2 mm along the axis besides.
-    const start = truth.map((_p, i) => along(2 + i * 5.5));
+    // A localiser's output: every contact within a few tenths of the metal it is inside.
+    const start = offsets(BF_GAPS).map((t, i) => along(t + 0.3 * (i % 2 ? 1 : -1)));
 
     const plan = await planAxisSnap({
       positionsTipFirst: start,
@@ -502,13 +523,33 @@ describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
     for (const gap of plan?.residuals ?? []) {
       expect(Math.abs(gap.residualMm), `gap ${gap.index}`).toBeLessThan(0.15);
       expect(gap.flagged).toBe(false);
+      expect(gap.templateOffMm).toBeNull();
     }
     for (const p of plan?.positions ?? []) {
       expect(offAxisMm(plan!.fit, p)).toBeLessThan(1e-6);
     }
   });
 
-  it('holds the template position where the image has no peak near it', async () => {
+  it('does not re-seat a shaft that grabbed the wrong blobs — it says so', async () => {
+    const truth = offsets(BF_GAPS).map((t) => along(t));
+    // The start the old Re-fit produces: evenly re-spaced at the median 5.5 mm and 2 mm along the
+    // axis besides, so contact 1 finds contact 2's metal. The snap keeps it on the metal it found
+    // and flags the disagreement, because a shaft this far out is a numbering question.
+    const start = truth.map((_p, i) => along(2 + i * 5.5));
+    const plan = await planAxisSnap({
+      positionsTipFirst: start,
+      gapsMm: BF_GAPS,
+      sample: brightAt(truth),
+      peak: peakAt(truth),
+      snapRadiusMm: 1.5,
+    });
+
+    expect(plan?.mode).toBe('axis-model');
+    expect(distance(plan?.positions[0] as vec3, truth[1] as vec3)).toBeLessThan(1e-6);
+    expect((plan?.residuals ?? []).some((g) => g.templateOffMm !== null)).toBe(true);
+  });
+
+  it('gives a contact with no metal the template slot, and only that contact', async () => {
     const truth = offsets(BF_GAPS).map((t) => along(t));
     // Contact 5's metal is missing from the image entirely — an artefact-suppressed blob.
     const visible = truth.filter((_p, i) => i !== 4);
@@ -522,6 +563,34 @@ describe.skipIf(!HAS_CONTACTS)('planAxisSnap', () => {
     expect(plan?.mode).toBe('axis-model');
     // It did not jump into contact 4's or 6's blob: it stayed where the manufacturer says it is.
     expect(distance(plan?.positions[4] as vec3, truth[4] as vec3)).toBeLessThan(0.3);
+    expect(plan?.templateHeld).toBe(1);
+    expect(plan?.sources[4]).toBe('template');
+  });
+
+  it('leaves detected metal where it is when it disagrees with the model, and flags it', async () => {
+    const truth = offsets(RD_GAPS).map((t) => along(t));
+    // Contact 5's metal really is half a gap from its slot — a mis-numbered or bent lead, which is
+    // the case a human has to look at rather than one the template should quietly correct.
+    const blobs = truth.map((p, i) => (i === 4 ? along(4 * 5 + 2.5) : p));
+    const plan = await planAxisSnap({
+      positionsTipFirst: blobs,
+      gapsMm: RD_GAPS,
+      sample: brightAt(blobs),
+      peak: peakAt(blobs),
+      snapRadiusMm: 1.5,
+    });
+
+    expect(plan?.mode).toBe('axis-model');
+    expect(plan?.templateHeld).toBe(0);
+    expect(plan?.sources[4]).toBe('peak');
+    // It stayed on its metal, to float error.
+    expect(distance(plan?.positions[4] as vec3, blobs[4] as vec3)).toBeLessThan(1e-6);
+    // And both gaps that contact 5 belongs to say how far from the model it is.
+    const touching = (plan?.residuals ?? []).filter((g) => g.index === 4 || g.index === 5);
+    expect(touching).toHaveLength(2);
+    for (const gap of touching) expect(gap.templateOffMm).toBeGreaterThan(1.75);
+    // Nothing else is: the other contacts agree with the template.
+    expect((plan?.residuals ?? []).filter((g) => g.templateOffMm !== null)).toHaveLength(2);
   });
 
   it('falls back to peakCentroid, projected onto the axis, on a host without sampleVolume', async () => {

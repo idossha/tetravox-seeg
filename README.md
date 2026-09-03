@@ -149,18 +149,23 @@ snap that could move a contact sideways is a snap with a degree of freedom the h
 have. What it does, whatever the scope and whether or not the model is known:
 
 1. fits the electrode's axis through all of its contacts, rejecting one that is off the line;
-2. samples the CT along that axis in a 1 mm tube, every 0.1 mm, through a window of ±0.45 × the
-   shaft's own pitch around each contact, and puts the contact at the peak of that profile —
-   interpolated between samples, so the position is not quantised to the sampling step;
-3. re-fits the axis to where the metal actually is (the intensity-weighted centroid of a disc around
-   each contact) and takes the profiles again on the settled line. **That is the only sideways
+2. puts each contact at the **orthogonal projection onto that axis** of its blob's intensity-weighted
+   centroid — the sideways part of the centroid is what the hardware forbids, the along-axis part is
+   measured metal;
+3. re-fits the axis through those centroids and retakes the projections. **That is the only sideways
    adjustment, and it moves the whole electrode.** No contact ever carries a lateral offset of its
    own;
-4. and where the model is known, slides the manufacturer's gap template onto the brightest metal and
-   takes each contact's position as the profile peak *nearest* its template position — keeping the
-   template position outright if the nearest peak is more than 0.35 × the local gap away.
+4. reads the CT along the axis in a 1 mm tube, every 0.1 mm, through ±0.45 × the shaft's own pitch, to
+   decide **whether a contact has metal at all** — under 35% of the electrode's median peak it has
+   none, and takes the model's slot if a model is known or keeps its own projection if not. The
+   profile says whether, never where: between 5 mm-pitch contacts it is a bloom-merged ripple rather
+   than one peak per contact;
+5. and where the model is known, anchors the manufacturer's gap template on the contacts that have
+   metal and uses it as a **check**: a detected contact more than 0.35 × the local gap from its slot
+   stays on its metal and is flagged in the per-gap table, because that is the shaft a human should
+   look at.
 
-The panel prints which of the last two ran: `snapped along axis · model BF10R-SP21X`, or
+The panel prints which mode ran: `snapped along axis · model BF10R-SP21X`, or
 `· measured pitch 5.0 mm` when nothing resolved a model. Without a model the measured median pitch
 sizes the search **window** and nothing else — an observed median is not a datasheet, and it never
 re-spaces a shaft.

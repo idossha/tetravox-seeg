@@ -10,30 +10,40 @@
   each centroid a different way. There is one snap now, for every scope (`s`, `⇧S`, **Snap all…**),
   with a model or without one:
   - the electrode's axis is fitted through all its contacts, rejecting one that is off the line;
-  - each contact goes to the peak of the 1-D CT profile **along that axis** — a 1 mm tube, sampled
-    every 0.1 mm through ±0.45 × the shaft's pitch, with parabolic sub-sample refinement, so the
-    position is not quantised to the sampling step;
-  - the axis is then re-fitted to where the metal actually is (an intensity-weighted disc centroid at
-    each contact) and the profiles are taken again. **That is the only lateral freedom there is, and
-    it belongs to the whole electrode.** No contact carries a sideways offset of its own, so every
-    snapped contact lies exactly on the line — the same line the drag guide draws;
-  - and where the model resolved, the manufacturer's gap template is slid onto the brightest metal and
-    each contact takes the profile peak *nearest* its template position, keeping the template outright
-    when the nearest peak is more than 0.35 × the local gap away. Without a model the measured median
-    pitch sizes the search **window** and nothing else — an observed median is not a datasheet and
-    never re-spaces a shaft.
+  - each contact goes to the **orthogonal projection onto that axis** of its blob's
+    intensity-weighted centroid (`scene.peakCentroid`) — the sideways part of the centroid is the
+    part the hardware says cannot be true and is dropped, the along-axis part is measured metal and
+    is kept;
+  - the axis is then re-fitted through those centroids and the projections retaken. **That is the
+    only lateral freedom there is, and it belongs to the whole electrode.** No contact carries a
+    sideways offset of its own, so every snapped contact lies exactly on the line — the same line the
+    drag guide draws;
+  - the 1-D CT profile along the axis (a 1 mm tube, sampled every 0.1 mm through ±0.45 × the shaft's
+    pitch) decides **whether a contact has metal**, not where along the rod it is: a contact whose
+    peak is under 35% of the electrode's median peak has none, and takes the model's slot when a
+    model resolved or keeps its own projection when none did. Measured on two hand-corrected subjects
+    in `seegprep`: taking the profile's peak *as* the position instead wanders 0.35 mm mean and
+    2.3 mm max and costs recall and precision, because between 5 mm-pitch contacts the profile is a
+    bloom-merged ripple rather than one peak per contact, and saturated platinum makes a flat top
+    whose argmax is biased by half a contact length. Any profile peak still taken is the midpoint of
+    its top-90% plateau for the same reason;
+  - and where the model resolved, the manufacturer's gap template is anchored on the contacts that
+    have metal and used as a **check, not as a mover**: a detected contact more than 0.35 × the local
+    gap from its slot stays on its metal and is reported in the per-gap table. Pulling it onto the
+    template would hide exactly the shaft a human needs to look at. Without a model the measured
+    median pitch sizes the profile **window** and nothing else — an observed median is not a datasheet
+    and never re-spaces a shaft.
   - The panel prints which ran: `snapped along axis · model BF10R-SP21X`, or `· measured pitch
-    5.0 mm`. On a host without `scene.sampleVolume` the snap reads `peakCentroid` and **projects its
-    answer onto the axis**, keeping which blob and where along it and discarding the sideways part.
-    An electrode with fewer than three contacts has no rod to fit and keeps the old per-contact
-    centroid snap.
+    5.0 mm`. A host without `scene.sampleVolume` snaps the same way and simply cannot tell a missing
+    contact from a present one, so nothing is held to the template. An electrode with fewer than
+    three contacts has no rod to fit and keeps the old per-contact centroid snap.
 - **The separate Snap to model is gone**, and with it the `⇧F` key, the **Snap all to model…** button
   and the `snap-model` operation. A model changes what the ordinary Snap *does* rather than offering a
   second kind of snap to choose between, and a button labelled "this time, do it properly" was a
   question the user should never have been asked. Removed rather than deprecated: 0.2.0 is unreleased,
   so no job file can be relying on it. The `snap` operation's arguments are unchanged, and its result
   now names, per electrode, the mode that ran (`axis` or `axis-model`), the model, the pitch, and how
-  many contacts held a template position.
+  many contacts had no metal and took the model's slot.
 - **The editor knows which electrode it is looking at.** A model section in the panel names the
   electrode's model, says where that came from, shows how many contacts it should have against how
   many it has, and prints every gap three ways: the measured 3-D distance, what the manufacturer says

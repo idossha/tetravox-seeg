@@ -493,11 +493,18 @@ export interface GapResidual {
   modelMm: number;
   residualMm: number;
   flagged: boolean;
+  /**
+   * How far a contact of this gap sits from its template slot, when that is past
+   * {@link TEMPLATE_REJECT_FRACTION} × the local gap. `null` otherwise — including with no model.
+   */
+  templateOffMm: number | null;
 }
 
 export function gapResiduals(
   positionsTipFirst: readonly vec3[],
-  gapsMm: readonly number[]
+  gapsMm: readonly number[],
+  /** Per contact, how far it is from its template slot when that exceeded the tolerance. */
+  offTemplateMm: readonly (number | null)[] = []
 ): GapResidual[] {
   const out: GapResidual[] = [];
   for (let i = 0; i + 1 < positionsTipFirst.length; i += 1) {
@@ -511,12 +518,20 @@ export function gapResiduals(
       modelMm: model,
       residualMm: residual,
       flagged: Math.abs(residual) > GAP_FLAG_MM,
+      // A gap belongs to two contacts, so either one disagreeing with the template marks it.
+      templateOffMm: maxOrNull(offTemplateMm[i] ?? null, offTemplateMm[i + 1] ?? null),
     });
   }
   return out;
 }
 
-// ---- sliding the template ------------------------------------------------------------------------
+function maxOrNull(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
+
+// ---- reading the image --------------------------------------------------------------------------
 
 /**
  * The intensity oracle: values at arbitrary world points, `NaN` outside the volume.
@@ -530,28 +545,9 @@ export type SampleFn = (points: readonly vec3[]) => Promise<readonly number[]>;
 /** `host.scene.peakCentroid` bound to a dataset. `null` = nothing bright in the box. */
 export type PeakFn = (world: vec3, radiusMm: number) => vec3 | null;
 
-export interface SlideOptions {
-  /** How far either side of the current tip the template is tried, in millimetres. */
-  windowMm?: number;
-  coarseStepMm?: number;
-  fineStepMm?: number;
-  /** The radius of the tube the intensity is averaged over. */
-  tubeRadiusMm?: number;
-  /** How many points around the tube per contact. `0` samples the axis alone — the fallback path. */
-  spokes?: number;
-}
-
-const DEFAULTS = {
-  windowMm: 6,
-  coarseStepMm: 0.25,
-  fineStepMm: 0.05,
-  tubeRadiusMm: 1,
-  spokes: 6,
-} as const;
-
 /**
- * The points one candidate offset asks about: each contact's template position, plus a ring of
- * `spokes` points at `tubeRadiusMm` around it.
+ * The points one sample position asks about: the point itself, plus a ring of `spokes` points at
+ * `tubeRadiusMm` around it.
  *
  * A depth electrode is about 0.8 mm across and a CT voxel is often 0.4–0.6 mm, so a *centre-line*
  * sample is one or two voxels wide and a shaft half a voxel off the fitted axis scores nothing.
@@ -589,82 +585,6 @@ function meanFinite(values: readonly number[]): number | null {
     n += 1;
   }
   return n * 2 < values.length ? null : n === 0 ? null : sum / n;
-}
-
-function gridOf(centre: number, halfWidth: number, step: number): number[] {
-  const out: number[] = [];
-  const count = Math.max(1, Math.round(halfWidth / step));
-  for (let k = -count; k <= count; k += 1) out.push(centre + k * step);
-  return out;
-}
-
-export interface SlideResult {
-  /** The `t` along the fitted axis at which contact 1 sits. */
-  tStart: number;
-  /** The mean tube intensity the winning offset scored. */
-  score: number;
-}
-
-/**
- * Slide the gap template along the axis and keep the offset that lies on the brightest metal.
- *
- * **One free parameter.** The gaps are the manufacturer's and are not adjusted, so the search
- * cannot make a wrong model fit by stretching it — a template that scores badly everywhere is a
- * model that is wrong, and the panel's residuals are what say so.
- *
- * Two passes: 0.25 mm across the whole window, then 0.05 mm across one coarse step either side of
- * the winner. Both are **one** `sample` call each, because the oracle is a bounded batch read and
- * forty-nine calls of seventy points is forty-eight more round trips than one call of 3,430.
- *
- * `null` when the oracle answered for nothing — every candidate outside the volume, or a volume
- * with no scalar to give. The caller then leaves the contacts where they are, which is the same
- * promise `snapContacts` makes about a contact with no metal near it.
- */
-export async function slideTemplate(
-  fit: AxisFit,
-  tTip: number,
-  direction: 1 | -1,
-  cumulative: readonly number[],
-  sample: SampleFn,
-  options: SlideOptions = {}
-): Promise<SlideResult | null> {
-  const windowMm = options.windowMm ?? DEFAULTS.windowMm;
-  const coarseStepMm = options.coarseStepMm ?? DEFAULTS.coarseStepMm;
-  const fineStepMm = options.fineStepMm ?? DEFAULTS.fineStepMm;
-  const tubeRadiusMm = options.tubeRadiusMm ?? DEFAULTS.tubeRadiusMm;
-  const spokes = options.spokes ?? DEFAULTS.spokes;
-
-  const u = perpendicularTo(fit.axis);
-  const v: vec3 = [
-    fit.axis[1] * u[2] - fit.axis[2] * u[1],
-    fit.axis[2] * u[0] - fit.axis[0] * u[2],
-    fit.axis[0] * u[1] - fit.axis[1] * u[0],
-  ];
-
-  const scoreGrid = async (grid: readonly number[]): Promise<SlideResult | null> => {
-    const points: vec3[] = [];
-    for (const tStart of grid) {
-      for (const offset of cumulative) {
-        points.push(...tubePoints(pointAt(fit, tStart + direction * offset), u, v, tubeRadiusMm, spokes));
-      }
-    }
-    if (points.length === 0) return null;
-    const values = await sample(points);
-    const per = (spokes + 1) * cumulative.length;
-    let best: SlideResult | null = null;
-    for (const [index, tStart] of grid.entries()) {
-      const slice = values.slice(index * per, (index + 1) * per);
-      const score = meanFinite(slice as number[]);
-      if (score === null) continue;
-      if (best === null || score > best.score) best = { tStart, score };
-    }
-    return best;
-  };
-
-  const coarse = await scoreGrid(gridOf(tTip, windowMm, coarseStepMm));
-  if (coarse === null) return null;
-  const fine = await scoreGrid(gridOf(coarse.tStart, coarseStepMm, fineStepMm));
-  return fine === null || fine.score < coarse.score ? coarse : fine;
 }
 
 // ---- extending a partially localised shaft ------------------------------------------------------
@@ -746,24 +666,30 @@ export function missingCounts(
  *
  * So the freedom is removed and put where it belongs:
  *
- *  * **Along the axis, per contact.** The 1-D intensity profile in a {@link DEFAULT_TUBE_RADIUS_MM}
- *    tube around the axis is sampled at {@link PROFILE_STEP_MM} through a window of
- *    ±{@link WINDOW_PITCH_FRACTION} × pitch, and the contact goes to its peak, parabolically refined
- *    between samples. The window is under half a pitch on purpose: a wider one lets a contact fall
- *    into its neighbour's blob, which is a mis-numbered electrode rather than a mis-placed contact.
- *  * **Sideways, per electrode — once.** After the first pass the intensity-weighted centroid of a
- *    disc around each contact says where the metal really is relative to the fitted line; the axis is
- *    re-fitted to those centroids and the profiles are taken again. Two passes, not iteration to
- *    convergence: the second pass is the line settling onto the rod, and a third would be fitting the
- *    noise. **No contact ever carries a lateral offset of its own** — the returned positions are
- *    `centroid + t · axis` arithmetic and nothing else, which is what makes them exactly collinear.
- *  * **Regularised by the model, when there is one.** {@link slideTemplate} puts the manufacturer's
- *    gap vector on the brightest metal; each contact then takes the profile peak *nearest its
- *    template position*, and a peak farther than {@link TEMPLATE_REJECT_FRACTION} × the local gap is
- *    refused in favour of the template itself. That is what stops a contact skipping to the wrong
- *    blob on a lead whose first gap is not its second. Without a model the measured median pitch sets
- *    the search **window** and nothing else: an observed median is not a datasheet and must never
- *    re-space a shaft behind the user's back.
+ *  * **Along the axis, per contact.** The contact goes to the orthogonal projection of its blob's
+ *    intensity-weighted centroid (`peakCentroid`) onto the fitted axis. The centroid's sideways
+ *    component is the part the hardware says cannot be true and is discarded; its along-axis
+ *    component is measured metal and is kept. seegprep measured both rules on two hand-corrected
+ *    subjects: the 1-D tube profile's peak wanders 0.35 mm mean and 2.3 mm max against the projected
+ *    centroid, because between 5 mm-pitch contacts the profile is a bloom-merged ripple rather than
+ *    one peak per contact, and saturated platinum makes a flat top whose argmax is biased by half a
+ *    contact length.
+ *  * **Sideways, per electrode — once.** The axis is re-fitted through those same centroids and the
+ *    projections retaken. Two passes, not iteration to convergence: the second pass is the line
+ *    settling onto the rod, and a third would be fitting the noise. **No contact ever carries a
+ *    lateral offset of its own** — the returned positions are `centroid + t · axis` arithmetic and
+ *    nothing else, which is what makes them exactly collinear.
+ *  * **The profile says whether there is metal, never where it is.** The tube profile through
+ *    ±{@link WINDOW_PITCH_FRACTION} × pitch is read at {@link PROFILE_STEP_MM}; a contact whose peak
+ *    is under {@link METAL_FRACTION} of the electrode's median peak has no metal, and takes the
+ *    model's template position when a model resolved, or keeps its own projection when none did.
+ *  * **Regularised by the model, when there is one — as a check, not as a mover.** The manufacturer's
+ *    gap template is anchored on the contacts that do have metal, and a detected contact more than
+ *    {@link TEMPLATE_REJECT_FRACTION} × the local gap from its slot **stays where the metal is** and
+ *    is flagged in the per-gap residuals. That disagreement is exactly the case a human should look
+ *    at, and pulling the contact onto the template would hide it. Without a model the measured median
+ *    pitch sizes the profile **window** and nothing else: an observed median is not a datasheet and
+ *    must never re-space a shaft behind the user's back.
  *
  * `null` means "nothing to say" and the caller leaves the contacts alone (or falls back to the
  * per-contact centroid snap for a shaft too short to fit): fewer than
@@ -779,23 +705,26 @@ export const PROFILE_STEP_MM = 0.1;
 /** Half the search window, as a fraction of the pitch. Under ½ so no contact reaches its neighbour. */
 export const WINDOW_PITCH_FRACTION = 0.45;
 
-/** A profile peak farther than this fraction of the local gap from the template is refused. */
+/** A detected contact this fraction of the local gap from its template slot is flagged, not moved. */
 export const TEMPLATE_REJECT_FRACTION = 0.35;
 
-/** The radius of the tube the profile is averaged over, and of the disc the lateral centroid uses. */
+/** A profile peak under this fraction of the electrode's median peak is not metal. */
+export const METAL_FRACTION = 0.35;
+
+/** The radius of the tube the profile is averaged over. */
 export const DEFAULT_TUBE_RADIUS_MM = 1;
 
 const DEFAULT_SPOKES = 6;
 
 /** Where one contact's final along-axis position came from. */
 export type AxisSource =
-  /** The peak of its 1-D intensity profile. */
-  | 'profile'
-  /** The model template's position, because no profile peak near it was acceptable. */
-  | 'template'
-  /** `peakCentroid`'s answer projected onto the axis — the host without `sampleVolume`. */
+  /** Its blob centroid, projected onto the axis — where a contact with metal goes. */
   | 'peak'
-  /** Nothing was found; the contact kept its own projection onto the axis. */
+  /** The profile's plateau midpoint: metal the host's centroid did not answer for. */
+  | 'profile'
+  /** The model template's slot, because this contact has no metal. */
+  | 'template'
+  /** No metal and no model; the contact kept its own projection onto the axis. */
   | 'held';
 
 export interface AxisSnapPlan {
@@ -807,7 +736,7 @@ export interface AxisSnapPlan {
   mode: 'axis' | 'axis-model';
   /** Where each contact's along-axis position came from, in the same order. */
   sources: AxisSource[];
-  /** How many contacts held the template position because no peak near it was acceptable. */
+  /** How many contacts took the model's template slot because they have no metal. */
   templateHeld: number;
   /** How many contacts the fit's one rejection pass dropped. */
   outliers: number;
@@ -941,95 +870,49 @@ function refinePeakAt(profile: Profile, index: number): number {
   return t + shift * step;
 }
 
-/** The profile's global maximum, refined. `null` when it answered for nothing. */
-function peakOf(profile: Profile): number | null {
+/**
+ * The profile's peak position: the midpoint of the plateau within 10% of its maximum.
+ *
+ * Saturated platinum gives a flat-topped profile, and the argmax of a flat top is wherever the noise
+ * happened to be highest — a bias of up to half a contact length. A one-sample maximum has no plateau
+ * and is refined between samples instead.
+ */
+function plateauPeakOf(profile: Profile): number | null {
+  const best = argmaxOf(profile);
+  if (best === null) return null;
+  const floor = 0.9 * (profile.value[best] as number);
+  let lo = best;
+  let hi = best;
+  while (lo > 0 && (profile.value[lo - 1] ?? -Infinity) >= floor) lo -= 1;
+  while (hi + 1 < profile.value.length && (profile.value[hi + 1] ?? -Infinity) >= floor) hi += 1;
+  if (lo === hi) return refinePeakAt(profile, best);
+  return ((profile.t[lo] as number) + (profile.t[hi] as number)) / 2;
+}
+
+/** The index of the profile's largest finite sample, or `null` when it answered for nothing. */
+function argmaxOf(profile: Profile): number | null {
   let best = -1;
   for (let i = 0; i < profile.value.length; i += 1) {
     const value = profile.value[i];
     if (value == null) continue;
     if (best < 0 || value > (profile.value[best] as number)) best = i;
   }
-  return best < 0 ? null : refinePeakAt(profile, best);
+  return best < 0 ? null : best;
 }
 
-/** Every local maximum of the profile, refined, in `t` order. Endpoints count. */
-function maximaOf(profile: Profile): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < profile.value.length; i += 1) {
-    const y = profile.value[i];
-    if (y == null) continue;
-    const left = profile.value[i - 1];
-    const right = profile.value[i + 1];
-    const risesFromLeft = left == null || y >= left;
-    const fallsToRight = right == null || y >= right;
-    if (risesFromLeft && fallsToRight) out.push(refinePeakAt(profile, i));
-  }
-  return out;
+/** How bright this contact's window gets — the number the metal test compares. */
+function peakValueOf(profile: Profile): number | null {
+  const best = argmaxOf(profile);
+  return best === null ? null : (profile.value[best] as number);
 }
 
-/**
- * The intensity-weighted centroid of a disc around each contact — where the metal is, sideways.
- *
- * This is the **only** lateral measurement in the snap, and it is consumed by the axis re-fit rather
- * than by any individual contact: the electrode as a whole may sit half a millimetre off the line
- * fitted to hand-placed contacts, and this is what lets the line move onto it. Weights are the sample
- * minus the disc's own minimum, so a constant background contributes nothing and the centroid is a
- * property of the bright thing in the disc.
- */
-async function lateralCentroids(
-  fit: AxisFit,
-  ts: readonly number[],
-  sample: SampleFn,
-  radiusMm: number
-): Promise<(vec3 | null)[]> {
-  const { u, v } = frameOf(fit.axis);
-  const rings = [radiusMm / 3, (2 * radiusMm) / 3, radiusMm];
-  const spokes = 8;
-  const perContact: vec3[][] = ts.map((t) => {
-    const centre = pointAt(fit, t);
-    const disc: vec3[] = [centre];
-    for (const r of rings) {
-      for (let s = 0; s < spokes; s += 1) {
-        const angle = (2 * Math.PI * s) / spokes;
-        const cos = Math.cos(angle) * r;
-        const sin = Math.sin(angle) * r;
-        disc.push([
-          centre[0] + u[0] * cos + v[0] * sin,
-          centre[1] + u[1] * cos + v[1] * sin,
-          centre[2] + u[2] * cos + v[2] * sin,
-        ]);
-      }
-    }
-    return disc;
-  });
-  const flat = perContact.flat();
-  const values = await sample(flat);
-  const out: (vec3 | null)[] = [];
-  let at = 0;
-  for (const disc of perContact) {
-    const slice = values.slice(at, at + disc.length);
-    at += disc.length;
-    let floor = Infinity;
-    for (const value of slice) if (Number.isFinite(value)) floor = Math.min(floor, value);
-    if (!Number.isFinite(floor)) {
-      out.push(null);
-      continue;
-    }
-    let weight = 0;
-    const sum: vec3 = [0, 0, 0];
-    disc.forEach((p, i) => {
-      const value = slice[i];
-      if (value === undefined || !Number.isFinite(value)) return;
-      const w = value - floor;
-      if (w <= 0) return;
-      weight += w;
-      sum[0] += w * p[0];
-      sum[1] += w * p[1];
-      sum[2] += w * p[2];
-    });
-    out.push(weight > 0 ? [sum[0] / weight, sum[1] / weight, sum[2] / weight] : null);
-  }
-  return out;
+function medianOf(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1
+    ? (sorted[mid] as number)
+    : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
 /** The gap on either side of contact `i`, whichever is smaller — what "near enough" is measured in. */
@@ -1041,35 +924,19 @@ function localGapMm(gapsMm: readonly number[], i: number, fallbackMm: number): n
 }
 
 /**
- * The along-axis positions a host with only `peakCentroid` can give: its answer, projected onto the
- * line.
- *
- * The projection is the point. `peakCentroid`'s vector is where the bright mass is, bloom included,
- * and taking it whole is exactly the zigzag; taking only its component *along* the rod keeps the
- * information it does have (which blob, and where along it) and discards the part the hardware says
- * cannot be true.
+ * Each contact's blob centroid, or `null` where the host answered for nothing bright — or for
+ * something too far off the line to be this rod (see {@link OFF_AXIS_LIMIT_MM}).
  */
-function peakTs(
+function blobCentroids(
   positions: readonly vec3[],
   fit: AxisFit,
   peak: PeakFn,
   snapRadiusMm: number
-): { ts: number[]; sources: AxisSource[]; found: vec3[] } {
-  const ts: number[] = [];
-  const sources: AxisSource[] = [];
-  const found: vec3[] = [];
-  positions.forEach((p, i) => {
+): (vec3 | null)[] {
+  return positions.map((p) => {
     const hit = peak(p, snapRadiusMm);
-    if (hit === null || offAxisMm(fit, hit) > OFF_AXIS_LIMIT_MM) {
-      ts.push(fit.t[i] as number);
-      sources.push('held');
-      return;
-    }
-    ts.push(tOf(fit, hit));
-    sources.push('peak');
-    found.push([...hit] as vec3);
+    return hit === null || offAxisMm(fit, hit) > OFF_AXIS_LIMIT_MM ? null : ([...hit] as vec3);
   });
-  return { ts, sources, found };
 }
 
 export async function planAxisSnap(input: AxisSnapInput): Promise<AxisSnapPlan | null> {
@@ -1084,94 +951,90 @@ export async function planAxisSnap(input: AxisSnapInput): Promise<AxisSnapPlan |
   const spokes = options.spokes ?? DEFAULT_SPOKES;
   const windowFraction = options.windowFraction ?? WINDOW_PITCH_FRACTION;
   const gapsMm = input.gapsMm ?? null;
-  // The measured median sets the **window** and nothing else, model or no model: it is what says how
-  // far a contact could plausibly be from where it is now, which is the one question it can answer.
+  // The measured median sets the profile **window** and nothing else, model or no model: it is what
+  // says how far a contact could plausibly be from where it is now, which is the one question it can
+  // answer.
   const pitchMm = measuredPitchMm(positions) ?? 0;
   const halfWindowMm = Math.max(stepMm * 2, windowFraction * (pitchMm > 0 ? pitchMm : 5));
 
+  // Two passes: the line is re-fitted through the centroids and the projections retaken on it.
   let fit = first;
-  let ts: number[];
-  let sources: AxisSource[];
-  let profiles: Profile[] | null = null;
-
-  if (input.sample === null) {
-    // No `sampleVolume`: `peakCentroid`, projected. Two passes all the same — the peaks are the
-    // lateral measurement, so the axis is re-fitted through them and the projection retaken.
-    const firstPass = peakTs(positions, fit, input.peak, input.snapRadiusMm);
-    const refit = firstPass.found.length >= 2 ? robustFit(firstPass.found) : null;
+  const onLine = blobCentroids(positions, fit, input.peak, input.snapRadiusMm).filter(
+    (c): c is vec3 => c !== null
+  );
+  if (onLine.length >= 2) {
+    const refit = robustFit(onLine);
     if (refit !== null) fit = refit;
-    const second = peakTs(positions, fit, input.peak, input.snapRadiusMm);
-    ts = second.ts;
-    sources = second.sources;
-    if (!sources.includes('peak')) return null;
-  } else {
-    const sample = input.sample;
-    ts = [...fit.t];
-    profiles = await profilesAlong(fit, ts, halfWindowMm, stepMm, sample, tubeRadiusMm, spokes);
-    const firstPeaks = profiles.map((profile) => peakOf(profile));
-    if (firstPeaks.every((t) => t === null)) return null;
-    ts = firstPeaks.map((t, i) => t ?? (ts[i] as number));
-
-    // The one lateral adjustment, and it is the whole electrode's: re-fit the line to where the metal
-    // actually is, then take the profiles again on the settled line.
-    const centroids = (await lateralCentroids(fit, ts, sample, tubeRadiusMm)).filter(
-      (c): c is vec3 => c !== null
-    );
-    if (centroids.length >= 2) {
-      const refit = robustFit(centroids);
-      if (refit !== null) {
-        const onOldAxis = ts.map((t) => pointAt(fit, t));
-        fit = refit;
-        ts = onOldAxis.map((p) => tOf(fit, p));
-      }
-    }
-    profiles = await profilesAlong(fit, ts, halfWindowMm, stepMm, sample, tubeRadiusMm, spokes);
-    const secondPeaks = profiles.map((profile) => peakOf(profile));
-    sources = secondPeaks.map((t) => (t === null ? 'held' : 'profile'));
-    ts = secondPeaks.map((t, i) => t ?? (ts[i] as number));
-    if (!sources.includes('profile')) return null;
   }
+  const centroids = blobCentroids(positions, fit, input.peak, input.snapRadiusMm);
+  const hasMetal = centroids.map((c) => c !== null);
+  const sources: AxisSource[] = centroids.map((c) => (c === null ? 'held' : 'peak'));
+  const ts = positions.map((p, i) => tOf(fit, (centroids[i] ?? p) as vec3));
+
+  if (input.sample !== null) {
+    const profiles = await profilesAlong(
+      fit,
+      ts,
+      halfWindowMm,
+      stepMm,
+      input.sample,
+      tubeRadiusMm,
+      spokes
+    );
+    const peaks = profiles.map((profile) => peakValueOf(profile));
+    // Relative to this electrode's own median peak, because CT intensity is not comparable between
+    // subjects, scanners or shafts — only within one rod.
+    const reference = medianOf(peaks.filter((v): v is number => v !== null));
+    if (reference !== null) {
+      peaks.forEach((value, i) => {
+        if (value === null || value < METAL_FRACTION * reference) {
+          hasMetal[i] = false;
+          sources[i] = 'held';
+          ts[i] = tOf(fit, positions[i] as vec3);
+          return;
+        }
+        if (hasMetal[i]) return;
+        // Metal the host's centroid did not answer for: the plateau midpoint is what is left.
+        const t = plateauPeakOf(profiles[i] as Profile);
+        if (t === null) return;
+        hasMetal[i] = true;
+        sources[i] = 'profile';
+        ts[i] = t;
+      });
+    }
+  }
+  if (!hasMetal.some(Boolean)) return null;
 
   let mode: 'axis' | 'axis-model' = 'axis';
   let templateHeld = 0;
+  const offTemplateMm: (number | null)[] = positions.map(() => null);
 
   if (gapsMm !== null && gapsMm.length + 1 >= positions.length) {
     const cumulative = cumulativeMm(gapsMm, positions.length);
     const direction: 1 | -1 = (ts[positions.length - 1] as number) >= (ts[0] as number) ? 1 : -1;
-    // With `sampleVolume` the template is slid against the image; without it, the best offset is the
-    // least-squares one against the peaks already found — the same single free parameter, measured
-    // rather than searched, because there is no affordable profile to search.
-    const tStart =
-      input.sample === null
-        ? ts.reduce((sum, t, i) => sum + (t - direction * (cumulative[i] as number)), 0) / ts.length
-        : ((
-            await slideTemplate(fit, ts[0] as number, direction, cumulative, input.sample, {
-              tubeRadiusMm,
-              spokes,
-            })
-          )?.tStart ?? null);
-    if (tStart !== null) {
-      mode = 'axis-model';
-      ts = ts.map((t, i) => {
-        const template = tStart + direction * (cumulative[i] as number);
-        const limit = TEMPLATE_REJECT_FRACTION * localGapMm(gapsMm, i, pitchMm > 0 ? pitchMm : 5);
-        const profile = profiles?.[i] ?? null;
-        const candidates = profile === null ? (sources[i] === 'held' ? [] : [t]) : maximaOf(profile);
-        let best: number | null = null;
-        for (const candidate of candidates) {
-          if (best === null || Math.abs(candidate - template) < Math.abs(best - template)) {
-            best = candidate;
-          }
-        }
-        if (best === null || Math.abs(best - template) > limit) {
-          templateHeld += 1;
-          sources[i] = 'template';
-          return template;
-        }
-        sources[i] = profile === null ? (sources[i] as AxisSource) : 'profile';
-        return best;
-      });
-    }
+    // The template's one free parameter, least-squares over the contacts that have metal: the
+    // detections are what the model has to agree with, so they are what it is anchored on.
+    const anchors: number[] = [];
+    ts.forEach((t, i) => {
+      if (hasMetal[i]) anchors.push(t - direction * (cumulative[i] as number));
+    });
+    const tStart = anchors.reduce((sum, t) => sum + t, 0) / anchors.length;
+    mode = 'axis-model';
+    ts.forEach((t, i) => {
+      const template = tStart + direction * (cumulative[i] as number);
+      if (!hasMetal[i]) {
+        ts[i] = template;
+        sources[i] = 'template';
+        templateHeld += 1;
+        return;
+      }
+      // Detected metal is never pulled onto the template: a contact that disagrees with the model is
+      // reported, because that disagreement is the case a human should look at.
+      const off = Math.abs(t - template);
+      if (off > TEMPLATE_REJECT_FRACTION * localGapMm(gapsMm, i, pitchMm > 0 ? pitchMm : 5)) {
+        offTemplateMm[i] = off;
+      }
+    });
   }
 
   const snapped = ts.map((t) => pointAt(fit, t));
@@ -1183,6 +1046,6 @@ export async function planAxisSnap(input: AxisSnapInput): Promise<AxisSnapPlan |
     templateHeld,
     outliers: fit.rejected.length,
     pitchMm,
-    residuals: gapsMm === null ? [] : gapResiduals(snapped, gapsMm),
+    residuals: gapsMm === null ? [] : gapResiduals(snapped, gapsMm, offTemplateMm),
   };
 }

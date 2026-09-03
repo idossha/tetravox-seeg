@@ -1029,7 +1029,7 @@ export function createModel(host: ModuleHost): SeegModel {
     meanShiftMm: number;
     /** The measured median pitch the search window was sized from. */
     pitchMm: number;
-    /** How many contacts held the template position because no profile peak near it was acceptable. */
+    /** How many contacts had no metal and took the model's template slot. */
     templateHeld: number;
     outliers: number;
   }
@@ -1237,10 +1237,9 @@ export function createModel(host: ModuleHost): SeegModel {
    * The intensity oracle the snap reads the CT through.
    *
    * `scene.sampleVolume` when the host has it — one bounded batch read for a whole electrode's
-   * profiles, which is what makes a 0.1 mm search along the axis affordable at all. `null` on an
-   * older host, and `planAxisSnap` then falls back to `peakCentroid` **projected onto the axis**:
-   * that keeps the part of the answer the hardware allows (which blob, and where along it) and
-   * discards the sideways part, which is the whole point of this snap.
+   * profiles, which is what tells a contact with metal from one without. `null` on an older host,
+   * where the snap still projects `peakCentroid`'s answer onto the axis and simply cannot tell a
+   * missing contact from a present one.
    */
   const sampleOracle = (dataset: string): SampleFn | null => {
     const sample = host.scene.sampleVolume?.bind(host.scene);
