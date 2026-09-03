@@ -17,6 +17,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Read once here so the catalogue steps can be *skipped* on `if:` rather than failing: a repo
+    # with no cross-repo token still cuts releases exactly as it did before, and the job summary's
+    # paste-it-yourself fragment is still printed.
+    env:
+      CATALOGUE_TOKEN: ${{ secrets.CATALOGUE_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -53,3 +58,71 @@ jobs:
               "manifest.json $(wc -c < dist/manifest.json) $(sha256sum dist/manifest.json | cut -d' ' -f1)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- the catalogue, opened as a PR rather than left to somebody's memory ----------------
+      #
+      # `packages/app/src/shared/extensions-index.json` in the app repository is what File >
+      # Extensions... offers offline, and it was refreshed by hand from the fragment above. 0.1.4
+      # shipped and was never catalogued, so nobody was offered it. The paste also *cannot* happen
+      # until the release exists -- the app verifies a download against the sha256 in its own URL --
+      # which puts it after the point everyone treats the release as finished.
+      #
+      # A PR and not a push: the catalogue is another repository's file, it goes through that repo's
+      # CI, and a human still says yes.
+      - name: Check out the app repository
+        if: env.CATALOGUE_TOKEN != ''
+        uses: actions/checkout@v5
+        with:
+          repository: idossha/tetravox
+          token: ${{ secrets.CATALOGUE_TOKEN }}
+          path: .catalogue
+
+      - name: Build the catalogue entry
+        if: env.CATALOGUE_TOKEN != ''
+        id: entry
+        run: |
+          node scripts/print-fragments.mjs "${{ inputs.tag || github.ref_name }}" "${{ github.repository }}" --registry-json \
+            "index.js $(wc -c < dist/index.js) $(sha256sum dist/index.js | cut -d' ' -f1)" \
+            "manifest.json $(wc -c < dist/manifest.json) $(sha256sum dist/manifest.json | cut -d' ' -f1)" > entry.json
+          node scripts/insert-catalogue-entry.mjs \
+            .catalogue/packages/app/src/shared/extensions-index.json entry.json
+
+      - name: Open the catalogue PR
+        if: env.CATALOGUE_TOKEN != '' && steps.entry.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CATALOGUE_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          SEEG_REPO: ${{ github.repository }}
+        working-directory: .catalogue
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          BRANCH="chore/seeg-catalogue-${VERSION}"
+
+          # Heredocs, not inline `-m` / `--body` strings. Continuation lines in an inline argument
+          # keep whatever indentation the YAML gave them, and four leading spaces is a markdown code
+          # block -- the PR body is read by people, so it has to survive the trip intact.
+          cat > /tmp/commit-msg.txt <<MSG
+          chore(extensions): catalogue sEEG ${VERSION}
+
+          Opened by tetravox-seeg's release workflow from the assets it had just
+          published and verified. Every hash is the one the release was checked
+          against, and each URL is the asset's own sha256.
+          MSG
+
+          cat > /tmp/pr-body.md <<BODY
+          Opened automatically by [tetravox-seeg ${TAG}](https://github.com/${SEEG_REPO}/releases/tag/${TAG}).
+
+          The hashes come off the published assets, so the entry is verifiable the moment it lands: the app refuses any download whose bytes do not match the sha256 in its own URL. \`permissions\` is \`derivePermissions()\` over the shipped manifest rather than a copy of the previous release's.
+
+          Merging makes ${VERSION} appear in File > Extensions... for anyone running a build that ships this catalogue.
+          BODY
+
+          git config user.name 'tetravox-seeg release'
+          git config user.email 'noreply@github.com'
+          git switch -c "$BRANCH"
+          git add packages/app/src/shared/extensions-index.json
+          git commit -F /tmp/commit-msg.txt
+          git push -u origin "$BRANCH"
+          gh pr create --repo idossha/tetravox --base main --head "$BRANCH" \
+            --title "chore(extensions): catalogue sEEG ${VERSION}" --body-file /tmp/pr-body.md
