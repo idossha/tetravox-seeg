@@ -1,14 +1,10 @@
 /**
  * **What the electrode is**, and where its contacts therefore are.
  *
- * Two things live here. The first is model resolution: `shaft.ts` knows a depth electrode is a rigid
- * rod with contacts along it and contact 1 at the deep end, but not *which* rod, so Re-fit re-spaces
- * at the shaft's own **median observed gap** — the best a module can do with no catalogue, and wrong
- * for the whole Ad-Tech Behnke-Fried family, whose first gap is not its second. A BF10R-SP21X
- * measured 3.0 mm then 5.5 mm re-spaced at its median comes out uniformly 5.5 mm, contact 2 moved
- * 2.5 mm off the metal it is inside, and every number the panel prints about it is then
- * self-consistent and wrong. {@link resolveElectrodeModel} is the other half: the subject's own
- * seegprep sidecar, then a bundled catalogue keyed by a part number, then honestly nothing.
+ * Two things live here. The first is model resolution: `shaft.ts`'s Re-fit re-spaces at the shaft's
+ * own median observed gap, which is wrong for any electrode whose gaps are not uniform (see
+ * CHANGELOG). {@link resolveElectrodeModel} is the other half: the subject's own seegprep sidecar,
+ * then a bundled catalogue keyed by a part number, then honestly nothing.
  *
  * The second is **the snap** — {@link planAxisSnap}, one function for every scope, with a model or
  * without one. Its own header says why a contact may not move sideways off its shaft.
@@ -35,13 +31,10 @@ const { contactsOf, distanceMm, fitLine } = contacts;
 /**
  * Where a group's geometry came from. `'none'` is not represented — that is a `null` model.
  *
- * `'sidecar-measured'` is the honest third answer, and it exists because seegprep's sidecar always
- * states a `spacing_gaps_mm`: when its own catalogue matched nothing it writes `model: "n/a"` and
- * fills the vector with **this shaft's measured median pitch, repeated**, so that a QC consumer
- * always has a nominal to compare against. That is a useful number and it is emphatically not a
- * manufacturer's geometry — a Behnke-Fried lead's measured median is 5.5 mm and its first gap is
- * 3.0 mm — so it is labelled differently, ranked below a real catalogue match, and shown to the user
- * as what it is.
+ * `'sidecar-measured'` is seegprep's own fallback: when its catalogue matched nothing it writes
+ * `model: "n/a"` with the shaft's measured median pitch repeated as `gapsMm`. That is a useful
+ * number but not a manufacturer's geometry, so it is ranked below a real catalogue match and shown
+ * to the user as what it is.
  */
 export type ModelSource = 'sidecar' | 'sidecar-measured' | 'catalogue';
 
@@ -161,19 +154,10 @@ export function resolveElectrodeModel(
     };
   }
 
-  /*
-   * Last: the sidecar's measured stand-in, ranked **below** the catalogue on purpose.
-   *
-   * seegprep writes `model: "n/a"` with the shaft's measured median pitch repeated whenever its own
-   * catalogue matched nothing — but *this* module may still know the model, because the table's
-   * `model` column and a site part number are keys seegprep never saw. A manufacturer's vector beats
-   * a measured median every time, and for the family that motivates this whole file it is the
-   * difference between a 3.0 mm first gap and a 5.5 mm one.
-   *
-   * Taken on its own it is still worth having: it is a per-electrode number to snap and to measure
-   * against rather than none at all, it is what the panel's per-gap table is filled from, and it is
-   * labelled `sidecar-measured` everywhere it is shown so nobody reads it as a datasheet.
-   */
+  // Last: the sidecar's measured stand-in, ranked below the catalogue — this module may still
+  // resolve a real model via the table's `model` column or a site part number, keys seegprep never
+  // saw. Taken on its own it is still worth having: a per-electrode number to snap and measure
+  // against, labelled `sidecar-measured` everywhere so nobody reads it as a datasheet.
   if (sidecarGaps !== null) {
     return {
       model: 'measured',
@@ -719,7 +703,7 @@ export function extendAlongAxis(input: ExtendInput): vec3[] | null {
   let t = fit.t[present - 1] as number;
   for (let k = 0; k < missing; k += 1) {
     // `gapsMm[present - 1 + k]` is the gap leading *into* the contact being added — the model's own
-    // spacing at that slot, which for a Behnke-Fried lead is not the same as the gap before it.
+    // spacing at that slot, not necessarily the same as the gap before it.
     const gap = input.gapsMm[present - 1 + k];
     if (gap === undefined) break;
     t += direction * gap;
@@ -755,13 +739,10 @@ export function missingCounts(
 /**
  * **The snap.** Every scope, with or without a model, is this function.
  *
- * The defect it exists to fix was visible on P073 and is visible on any dense implant: snapping each
- * contact to its *own* blob's intensity centroid makes the contacts zigzag ±0.3–0.7 mm around the
- * straight orange trajectory the drag guide draws, because CT bloom is not symmetric about the rod —
- * a neighbouring shaft, a bright skull edge or an anisotropic voxel pulls each centroid a different
- * way. A depth electrode is one rigid rod. Its contacts are collinear by construction, so a snap that
- * can move a contact sideways off its own shaft is a snap with a degree of freedom the hardware does
- * not have.
+ * A depth electrode is one rigid rod: its contacts are collinear by construction, so a snap that can
+ * move a contact sideways off its own shaft has a degree of freedom the hardware does not have.
+ * Snapping each contact to its own blob's intensity centroid (CT bloom is not symmetric about the
+ * rod) is what produces the zigzag this function exists to avoid — see CHANGELOG.
  *
  * So the freedom is removed and put where it belongs:
  *

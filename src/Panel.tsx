@@ -548,11 +548,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         </button>
       </div>
 
-      {/*
-        There is one Snap, and what it did depends on whether the electrode's model resolved — so
-        this line is the only way to tell "on the axis, regularised by a BF10R-SP21X" from "on the
-        axis, window sized by the measured pitch". The contacts look the same either way.
-      */}
+      {/* There is one Snap now; this line is the only way to tell which mode ran. */}
       {view.snapNote !== null && (
         <p data-testid="seeg-snap-mode" className="text-tvx-dim">
           {view.snapNote}

@@ -52,10 +52,6 @@ export const seegManifest: ModuleManifest = {
     { id: 'next', title: 'Next contact', key: 'n' },
     { id: 'prev', title: 'Previous contact', key: 'p' },
     { id: 'refit', title: 'Re-fit shaft', key: 'f' },
-    // There is no `snap-model` command. 0.2.0 briefly had one (`⇧F`) beside these three, and it was
-    // a second kind of snap the user had to choose between; the ordinary Snap now does what it did
-    // — fit the axis, use the manufacturer's gaps when the model resolved — so a key that meant
-    // "this time, do it properly" had nothing left to mean. The panel says which mode ran.
     { id: 'extend', title: 'Extend along axis to the model’s contact count…' },
     { id: 'renumber', title: 'Renumber tip-first' },
     { id: 'flip-tip', title: 'Flip tip end', key: 't' },
@@ -132,12 +128,9 @@ export const seegManifest: ModuleManifest = {
     // operation reports `{ t1: 'not-open' }` and everything else it did still stands, so a job
     // author learns which file the scene is missing instead of getting contacts over nothing.
     { id: 'load', args: { ct: 'path', tsv: 'path', t1: 'path?' } },
-    // `scope` is contact | electrode | all, and it decides which contacts *move* — never how they
-    // are placed. Every scope fits the electrode's axis and puts the contacts on it, using the
-    // manufacturer's gaps where a model resolved; the result says per electrode which mode ran, so
-    // a job learns whether it got `axis` or `axis-model` without a second operation to ask for it.
-    // There was a `snap-model` operation in 0.2.0's development, and it is **removed** rather than
-    // deprecated: 0.2.0 is unreleased, so no job file can be relying on it.
+    // `scope` is contact | electrode | all. Every scope fits the electrode's axis and puts the
+    // contacts on it, using the manufacturer's gaps where a model resolved; the result says per
+    // electrode which mode ran (`axis` or `axis-model`).
     {
       id: 'snap',
       args: { scope: 'string', electrode: 'string?', contact: 'string?', radiusMm: 'number?' },

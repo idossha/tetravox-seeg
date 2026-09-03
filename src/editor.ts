@@ -1040,8 +1040,7 @@ export function createModel(host: ModuleHost): SeegModel {
    * The scope decides which contacts *move*; it never decides how they are placed. Even a
    * single-contact snap fits the whole electrode's axis and puts that contact on it, because the
    * electrode is one rigid rod and a contact's lateral position is not its own property (see
-   * `planAxisSnap`). What used to happen instead — each contact to its own blob's intensity centroid
-   * — made the contacts zigzag ±0.3–0.7 mm around the very axis the drag guide draws.
+   * `planAxisSnap`).
    *
    * An electrode with fewer than {@link AXIS_SNAP_MIN_CONTACTS} contacts has no axis worth fitting,
    * and only that electrode falls back to the old per-contact centroid snap. Whatever the scope, the
@@ -1155,10 +1154,8 @@ export function createModel(host: ModuleHost): SeegModel {
   /**
    * The one line the panel prints after a snap: which mode ran, and what it was aimed at.
    *
-   * A user cannot tell "on the axis, regularised by a BF10R-SP21X" from "on the axis, window sized
-   * by the measured 5.0 mm pitch" by looking at the contacts, and the two make different claims. The
-   * separate **Snap to model** button used to be how you knew; there is one snap now, so the readout
-   * is how you know.
+   * The two modes make different claims about the same contacts and a user cannot tell them apart by
+   * looking, so with one Snap button now, this readout is how you know which ran.
    */
   const snapLine = (reports: readonly SnapReport[]): string | null => {
     const real = reports.filter((r) => r.moved > 0);
