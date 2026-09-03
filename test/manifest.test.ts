@@ -8,6 +8,7 @@
  * reason it cannot be.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { validateManifest } from '@tetravox/module-sdk/manifest-schema.mjs';
 import { MODULE_HOST_VERSION } from '@tetravox/module-sdk/manifest-types.mjs';
@@ -81,4 +82,22 @@ describe('the manifest', () => {
     expect(seegManifest.ui?.popout).not.toBe('preferred');
   });
 
+});
+
+/**
+ * The manifest's version and `package.json`'s, held equal.
+ *
+ * Two hand-bumped copies of one number, and nothing used to compare them: `dist/manifest.json` is
+ * emitted from `seegManifest`, so the manifest's copy is what actually ships, while `package.json`'s
+ * is what the repository and every release note say the version *is*. A release that bumped one and
+ * not the other would publish an asset whose own manifest disagreed with its tag, and the editlog's
+ * `tool` field -- derived from the manifest since 0.1.6 -- would name a version nobody released.
+ */
+describe('the version, in the two places that carry it', () => {
+  it('matches package.json', () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+    ) as { version: string };
+    expect(seegManifest.version).toBe(pkg.version);
+  });
 });

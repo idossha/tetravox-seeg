@@ -50,6 +50,7 @@ import type {
 } from '@tetravox/module-sdk';
 import type { DragGuide } from './dragguide';
 import { dragGuide } from './dragguide';
+import { seegManifest } from './manifest';
 import type { ShaftDiagram, ShaftStats } from './shaft';
 import {
   allShaftStats,
@@ -119,8 +120,17 @@ const {
 const BACKUP_TEMPLATE = '{name}.{stamp}.bak';
 const EDITLOG_TEMPLATE = '{stem}_editlog.json';
 
-/** `manifest.version`, quoted into the editlog's `tool` field. */
-const TOOL = 'Tetravox sEEG contacts 0.1.0';
+/**
+ * `manifest.version`, quoted into the editlog's `tool` field.
+ *
+ * **Derived, never written down.** This was a hand-maintained literal until 0.1.6, and it said
+ * `0.1.0` in every release from 0.1.0 to 0.1.5 -- so an editlog, whose whole job is to record which
+ * build produced an edit, could not tell a 0.1.0 edit from a 0.1.5 one. The field is a contract with
+ * `seegprep`, which is exactly the kind of value that must not have a second copy for a release to
+ * forget. `test/manifest.test.ts` holds the manifest to `package.json` in turn, so the one number
+ * left to bump by hand cannot silently disagree with the version the repo says it is.
+ */
+const TOOL = `Tetravox sEEG contacts ${seegManifest.version}`;
 
 /**
  * The drag guide's highlight colour — a warm amber, opaque.
