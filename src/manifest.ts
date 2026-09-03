@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.1.6',
+  version: '0.2.0',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -52,6 +52,12 @@ export const seegManifest: ModuleManifest = {
     { id: 'next', title: 'Next contact', key: 'n' },
     { id: 'prev', title: 'Previous contact', key: 'p' },
     { id: 'refit', title: 'Re-fit shaft', key: 'f' },
+    // Appended 0.2.0, beside Re-fit and keyed as its shifted twin because it is the same gesture
+    // with the manufacturer's geometry instead of the shaft's own median gap. `m` is not in §13.5's
+    // pool; `Shift+f` is the pool key this module already owns unshifted.
+    { id: 'snap-model', title: 'Snap electrode to its model', key: 'f', shift: true },
+    { id: 'snap-model-all', title: 'Snap every electrode to its model…' },
+    { id: 'extend', title: 'Extend along axis to the model’s contact count…' },
     { id: 'renumber', title: 'Renumber tip-first' },
     { id: 'flip-tip', title: 'Flip tip end', key: 't' },
     { id: 'ghost', title: 'Contacts visible through slices', key: 'g' },
@@ -87,6 +93,10 @@ export const seegManifest: ModuleManifest = {
         '../ieeg/{sub}_space-{space}_coordsystem.json',
         '../ieeg/{sub}_space-{space}_electrodes_editlog.json',
         '../../../SimNIBS/{sub}/m2m_{id}/T1.nii.gz',
+        // seegprep's per-electrode geometry sidecar (seegprep PR #2): `model`,
+        // `contact_length_mm` and `spacing_gaps_mm` for this subject's own implant. It carries no
+        // `space` entity, because the geometry of a rod is not a coordinate space.
+        '../ieeg/{sub}_electrodes-geometry.json',
       ],
     },
     {
@@ -95,6 +105,7 @@ export const seegManifest: ModuleManifest = {
         '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz',
         '{sub}_space-{space}_coordsystem.json',
         '{stem}_editlog.json',
+        '{sub}_electrodes-geometry.json',
       ],
     },
   ],
@@ -128,6 +139,15 @@ export const seegManifest: ModuleManifest = {
       args: { scope: 'string', electrode: 'string?', contact: 'string?', radiusMm: 'number?' },
     },
     { id: 'refit', args: { electrode: 'string?' } },
+    // The catalogue-aware pair, appended 0.2.0. `electrode` absent means every electrode that has a
+    // resolved model — the shape `refit`, `renumber` and `flip-tip` already read — and an electrode
+    // with no model is skipped rather than re-spaced at its median gap behind the job author's
+    // back: a job that asked to snap to a model and got an even re-spacing instead would be told
+    // nothing. The result names which electrodes were skipped and why.
+    { id: 'snap-model', args: { electrode: 'string?', radiusMm: 'number?' } },
+    // `extend` is the one operation here that *adds* contacts, so it is deliberately not folded
+    // into `snap-model`: a batch that wanted a shaft completed has to say so.
+    { id: 'extend', args: { electrode: 'string?', radiusMm: 'number?' } },
     { id: 'renumber', args: { electrode: 'string?' } },
     { id: 'ghost', args: { on: 'boolean' } },
     // Appended 2026-08-30 beside `ghost`, and for the same reason it exists: which of a contact

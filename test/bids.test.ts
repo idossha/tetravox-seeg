@@ -18,11 +18,13 @@ import {
   editlogNameFor,
   FROM_CT_COORDSYSTEM,
   FROM_CT_EDITLOG,
+  FROM_CT_GEOMETRY,
   FROM_CT_T1,
   FROM_CT_TSV,
   FROM_TSV_COORDSYSTEM,
   FROM_TSV_CT,
   FROM_TSV_EDITLOG,
+  FROM_TSV_GEOMETRY,
   seegprepWarning,
   stemOf,
   subjectOf,
@@ -37,12 +39,14 @@ describe('bundleOf', () => {
       [FROM_CT_COORDSYSTEM]: `${DERIV}/ieeg/sub-P076_space-T1w_coordsystem.json`,
       [FROM_CT_EDITLOG]: null,
       [FROM_CT_T1]: '/data/bids/derivatives/SimNIBS/sub-P076/m2m_P076/T1.nii.gz',
+      [FROM_CT_GEOMETRY]: `${DERIV}/ieeg/sub-P076_electrodes-geometry.json`,
     });
     expect(bundle.tsv).toBe(`${DERIV}/ieeg/sub-P076_space-T1w_electrodes.tsv`);
     expect(bundle.t1).toBe('/data/bids/derivatives/SimNIBS/sub-P076/m2m_P076/T1.nii.gz');
     expect(bundle.coordsystem).toContain('_coordsystem.json');
     expect(bundle.editlog).toBeNull();
     expect(bundle.ct).toBeNull();
+    expect(bundle.geometry).toBe(`${DERIV}/ieeg/sub-P076_electrodes-geometry.json`);
     expect(bundleIsEmpty(bundle)).toBe(false);
   });
 
@@ -112,7 +116,13 @@ describe('the manifest and the module agree about the BIDS layout', () => {
       FROM_CT_COORDSYSTEM,
       FROM_CT_EDITLOG,
       FROM_CT_T1,
+      FROM_CT_GEOMETRY,
     ]);
-    expect(fromTsv?.candidates).toEqual([FROM_TSV_CT, FROM_TSV_COORDSYSTEM, FROM_TSV_EDITLOG]);
+    expect(fromTsv?.candidates).toEqual([
+      FROM_TSV_CT,
+      FROM_TSV_COORDSYSTEM,
+      FROM_TSV_EDITLOG,
+      FROM_TSV_GEOMETRY,
+    ]);
   });
 });

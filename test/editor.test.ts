@@ -13,7 +13,8 @@ import { describe, expect, it } from "vitest";
 import { HAS_CONTACTS } from "./setup";
 import { contacts } from "@tetravox/module-sdk";
 import type { Contact, ContactSet, vec3 } from "@tetravox/module-sdk";
-import { spacingMmAt } from "../src/editor";
+import { spacingMmAt, TOOL } from "../src/editor";
+import { seegManifest } from "../src/manifest";
 
 const { contactsOf, distanceMm, paletteColor } = contacts;
 
@@ -74,5 +75,22 @@ describe.skipIf(!HAS_CONTACTS)("spacingMmAt", () => {
     expect(spacingMmAt(ordered, 0)).toBeNull();
     expect(spacingMmAt(ordered, 1)).toBeCloseTo(10, 5); // tip(0) -> mid(10)
     expect(spacingMmAt(ordered, 2)).toBeCloseTo(20, 5); // mid(10) -> far(30)
+  });
+});
+
+/**
+ * The editlog's `tool` field, held to the manifest.
+ *
+ * It was a hand-maintained literal through 0.1.5 and read `Tetravox sEEG contacts 0.1.0` in all six
+ * of those releases, so the one field whose job is to say which build produced an edit could not
+ * tell them apart. `seegprep` reads it. The docstring said "derived, never written down" — this is
+ * what holds it to that, and `manifest.test.ts` holds the manifest to `package.json` in turn.
+ */
+describe("the editlog's tool field", () => {
+  it("names the manifest's version, never a literal of its own", () => {
+    expect(TOOL).toBe(`Tetravox sEEG contacts ${seegManifest.version}`);
+    expect(TOOL).toContain(seegManifest.version);
+    // And it is a version, not a placeholder: a `0.1.0` surviving a bump is the exact defect.
+    expect(TOOL).toMatch(/ \d+\.\d+\.\d+$/);
   });
 });

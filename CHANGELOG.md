@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.2.0 — 2026-09-03
+
+- **The editor now knows which electrode it is looking at, and snaps to it.** A new model section in
+  the panel names the electrode's model, says where that came from, shows how many contacts it should
+  have against how many it has, and prints every gap three ways: the measured 3-D distance, what the
+  manufacturer says it is, and the difference — flagged when it is more than 0.75 mm out. **Snap to
+  model** (`⇧F`, or **Snap all to model…**) fits a line through the shaft, rejects one contact that is
+  off it, slides the manufacturer's gap template along the rod until it sits on the brightest metal,
+  and then moves each contact onto its local peak — refusing any peak that lands more than 1 mm off
+  the rod, because that is usually the *neighbouring* electrode. The whole thing is one undo step and
+  it never renumbers.
+  - Why it matters: an Ad-Tech Behnke-Fried lead is **3.0 mm** between contacts 1 and 2 and **5.5 mm**
+    from there out. Re-fit, which re-spaces at the shaft's own median gap, turns that into a uniform
+    5.5 mm and leaves contact 2 two and a half millimetres off the metal it is inside — with every
+    number the panel prints about it self-consistent and wrong.
+- **Extend along axis** places the contacts a shaft is missing. When an electrode has fewer contacts
+  than its model, the button asks first and then puts the missing ones beyond the *entry* end at the
+  model's own spacing and snaps them; they save with `status: added`, exactly like a contact placed by
+  hand. That is where a localiser loses them: the deep contacts sit in brain and are easy, the shallow
+  ones sit in the skull's own brightness and are not.
+- **Where the geometry comes from**, most specific first: this subject's `seegprep`
+  `sub-<id>_electrodes-geometry.json` sidecar, then a gap table for 44 electrode models bundled from
+  `seegprep`'s own catalogue and keyed by the table's `model` column or a site part number
+  (`BF10R-SP21X-0C3` finds `BF10R-SP21X`), then **nothing** — and nothing is a supported state, not a
+  failure. With no model resolved the module behaves exactly as it did before: Re-fit re-spaces at the
+  observed median gap, and the panel says so instead of pretending.
+  - **List…** in the model section reads a site electrode list
+    (`name,target,part_number,n_contacts,…`) for its part numbers. It is a file sheet rather than an
+    automatic discovery because the list lives four directories above the derivative's `ieeg/` and a
+    sibling rule may ascend at most three.
+- **The drag guide states the model distance beside the measured one.** Dragging a contact on an
+  electrode with a model now reads `4.9 / 5.0 mm` — where it is, and where it is being aimed. Both are
+  3-D distances, like every distance this module prints.
+- The editlog records **`model`** and **`snap_mode`** (`free` or `model`) beside each electrode —
+  additive to `tetravox.contacts/editlog@1`, so a reader that knows only the old keys is unaffected
+  and a log written before these existed reads as "no model, free snap", which is what it was. Two
+  kinds of move make different claims about a position, and `snapped: true` alone could not tell them
+  apart.
+- `snap-model` and `extend` are job-file operations, so a batch has both. `snap-model` with no
+  `electrode` does every electrode that has a model and **reports** the ones it skipped rather than
+  quietly re-spacing them.
+
 ## 0.1.6 — 2026-09-02
 
 - **The editlog names the version that actually wrote it.** `tool` is derived from the manifest

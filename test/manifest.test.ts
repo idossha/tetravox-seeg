@@ -29,6 +29,7 @@ const COMMANDS_THAT_ARE_NOT_OPERATIONS: Record<string, string> = {
   redo: 'the session’s own history stack, which a job has no use for',
   'snap-electrode': 'the `snap` operation with `scope: "electrode"`',
   'snap-all': 'the `snap` operation with `scope: "all"`, plus a confirmation',
+  'snap-model-all': 'the `snap-model` operation with no `electrode`, plus a confirmation',
   'save-as': 'opens a file sheet; the `save` operation is handed `out` instead',
 };
 
