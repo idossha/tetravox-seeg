@@ -52,3 +52,9 @@ jobs:
       # The app's own validator, from the SDK tarball.
       - name: Validate manifest.json
         run: node scripts/validate-manifest.mjs
+
+      # `src/catalogue.gen.ts` is generated from seegprep's electrode_models.json and pinned by
+      # sha256, like the contacts kit. CI has no seegprep checkout, so this checks the generated
+      # file against the pin — which is what catches it being hand-edited — and says so.
+      - name: Check the electrode catalogue against its pin
+        run: node scripts/gen-catalogue.mjs --check

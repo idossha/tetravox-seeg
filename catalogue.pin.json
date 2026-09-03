@@ -1,0 +1,11 @@
+{
+  "$comment": "The depth-electrode gap table src/catalogue.gen.ts was generated from. seegprep owns the numbers; this repository owns the copy that ships inside the bundle, and the two hashes are what keep the copy honest. `node scripts/gen-catalogue.mjs --check` re-asserts them, and is part of `pnpm run check`.",
+  "schema": 1,
+  "source": {
+    "repo": "seegprep",
+    "path": "src/seegprep/data/electrode_models.json",
+    "sha256": "b3493c6dcd8047c6a3b15b6dbfb0d5ef9ae9d7615f7ad906728323788fb944a6"
+  },
+  "generated": "04efe4c8ccff1abcad89a574ea711c9fcf9af9fc3559fc07cdccee942ddd029d",
+  "models": 44
+}
