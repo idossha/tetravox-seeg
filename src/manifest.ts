@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.1.6',
+  version: '0.1.7',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -87,6 +87,16 @@ export const seegManifest: ModuleManifest = {
         '../ieeg/{sub}_space-{space}_coordsystem.json',
         '../ieeg/{sub}_space-{space}_electrodes_editlog.json',
         '../../../SimNIBS/{sub}/m2m_{id}/T1.nii.gz',
+        // The default save target for the corrected table (T1, 2026-09-03): under the dataset's own
+        // derivatives rather than beside seegprep's output. `bids.ts`'s `FROM_TSV_DERIVATIVES_CORRECTED*`.
+        '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv',
+        '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json',
+        // The QC export sheet's default output folder (`src/qc/paths.ts`'s `FROM_ANCHOR_QC_*`).
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.svg',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.tsv',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.png',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.png',
+        '{derivatives}/tetravox/dataset_description.json',
       ],
     },
     {
@@ -95,6 +105,13 @@ export const seegManifest: ModuleManifest = {
         '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz',
         '{sub}_space-{space}_coordsystem.json',
         '{stem}_editlog.json',
+        '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv',
+        '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.svg',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.tsv',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.png',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.png',
+        '{derivatives}/tetravox/dataset_description.json',
       ],
     },
   ],
@@ -107,6 +124,31 @@ export const seegManifest: ModuleManifest = {
       // the provenance sidecar `seegprep`'s --force guard looks for.
       siblings: ['{name}.{stamp}.bak', '{stem}_editlog.json'],
       backup: 'timestamped',
+    },
+    // The QC export sheet (T1, 2026-09-03): a `Save as…` here still lets a user redirect any one
+    // figure, but the sheet's own default output folder is the `{derivatives}` template below —
+    // `src/qc/paths.ts` builds the same names this writer declares, and `test/qc/paths.test.ts` pins
+    // the pair the way `bids.test.ts` pins the load-side templates.
+    {
+      id: 'qc-spacing-svg',
+      title: 'Save spacing histogram (SVG)',
+      filters: [{ name: 'SVG figure', extensions: ['svg'] }],
+      siblings: [
+        '{derivatives}/tetravox/dataset_description.json',
+        '{derivatives}/tetravox/sub-{id}/ieeg/figures/sub-{id}_desc-spacing_qc.tsv',
+      ],
+    },
+    {
+      id: 'qc-reslice-png',
+      title: 'Save per-electrode reslice (PNG)',
+      filters: [{ name: 'PNG figure', extensions: ['png'] }],
+      siblings: ['{derivatives}/tetravox/dataset_description.json'],
+    },
+    {
+      id: 'qc-implant3d-png',
+      title: 'Save 3-D implant figure (PNG)',
+      filters: [{ name: 'PNG figure', extensions: ['png'] }],
+      siblings: ['{derivatives}/tetravox/dataset_description.json'],
     },
   ],
   operations: [

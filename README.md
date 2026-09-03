@@ -191,6 +191,33 @@ which is the in-session undo of everything; the `.bak` is the on-disk one.
 carries a `•`, and closing the window, starting a new scene, opening another one or closing the CT all
 ask first.
 
+**By default, Save writes the corrected table** to
+`derivatives/tetravox/sub-<id>/ieeg/sub-<id>_space-<space>_electrodes_corrected.tsv` — a copy under the
+dataset's own `derivatives/`, alongside a matching `..._corrected_editlog.json` — rather than back over
+`seegprep`'s own output; `seegprep`'s `--force` guard now looks for either name. If the table's anchor
+is not inside a BIDS dataset the module can find a `derivatives/` root for, Save falls back to the
+table's own source path, same as before.
+
+### QC exports
+
+The panel's **QC export** section writes three figures plus a spacing table, to
+`derivatives/tetravox/sub-<id>/ieeg/figures/` by default (a `Save as…` there redirects any one of them):
+
+| File                                          | What it shows                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------- |
+| `sub-<id>_desc-spacing_qc.svg`                | A histogram of consecutive-contact 3-D distances, with one dashed line per electrode model's nominal pitch |
+| `sub-<id>_desc-spacing_qc.tsv`                | The distances behind the histogram: `electrode`, `contact_a`, `contact_b`, `distance_mm` |
+| `sub-<id>_desc-reslice_qc.png`                | Every electrode's shaft-axis plane, T1 in grey with a CT bone overlay, tiled 3 to a row |
+| `sub-<id>_desc-implant3d_qc.png`              | A capture of the 3-D view with a colour legend |
+
+A `derivatives/tetravox/dataset_description.json` marks the folder as a BIDS derivative, written once
+if it is not already there.
+
+**The 3-D implant figure is one capture, not the four angles (superior/left/right/anterior) originally
+planned**: Tetravox has no way yet for a module to aim the 3-D camera before a screenshot, so the
+figure is whatever the 3-D view is showing when you export. `src/qc/implant3d.ts` is written so a
+future camera-control host API only changes how many captures are taken, not how a tile is drawn.
+
 ### Scenes, and a build without the module
 
 The contacts are ordinary scene layers, so a `*.tetravox.json` written here opens anywhere — including

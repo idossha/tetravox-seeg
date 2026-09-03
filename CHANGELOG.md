@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.7 — 2026-09-03
+
+- **A QC export sheet**: the panel gained a checklist for a spacing histogram, a per-electrode
+  reslice figure and a 3-D implant figure, plus a `Save as…` to redirect any one of them. Exports
+  land under `derivatives/tetravox/sub-<id>/ieeg/figures/` by default — `sub-<id>_desc-spacing_qc.svg`,
+  `..._desc-reslice_qc.png`, `..._desc-implant3d_qc.png`, `..._desc-spacing_qc.tsv` (electrode,
+  contact_a, contact_b, distance_mm — 3-D world distances) — alongside a
+  `derivatives/tetravox/dataset_description.json` marking the folder as a BIDS derivative, written
+  once if it is not already there. The spacing histogram draws one dashed nominal-pitch line per
+  electrode model present, from the table's own `model` column or `seegprep`'s geometry sidecar.
+  **The 3-D implant figure is a single capture, not the four angles originally planned**: the host
+  has no camera-control call yet, so there is no way to aim the 3-D view before each shot (see
+  `src/qc/implant3d.ts`).
+- **The corrected table's default save location moved** to
+  `derivatives/tetravox/sub-<id>/ieeg/sub-<id>_space-<space>_electrodes_corrected.tsv` (and its
+  matching `..._corrected_editlog.json`), away from writing back over `seegprep`'s own output. A
+  table opened from an anchor with no resolvable BIDS derivatives root still falls back to its own
+  source path, exactly as before. `seegprepWarning` now accepts either `_electrodes` or
+  `_electrodes_corrected` stems, matching `seegprep`'s own `--force` guard.
+- **Vendors a newer `@tetravox/module-sdk`** (`1.0.0-core.0.3.4`, tracking Tetravox PR #18's host
+  API additions — `scene.sampleVolume`, `files.writeBinary`, `.svg`/`.html` in `writeText`,
+  `capture.screenshot`, and `{derivatives}` manifest sibling templates). Pinned as
+  `vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz`; this moves to the official
+  `1.0.0-core.0.3.5` tarball once Tetravox cuts that release.
+
 ## 0.1.6 — 2026-09-02
 
 - **The editlog names the version that actually wrote it.** `tool` is derived from the manifest

@@ -69,11 +69,23 @@ import {
   baseNameOf,
   bundleOf,
   editlogNameFor,
+  FROM_TSV_DERIVATIVES_CORRECTED,
+  FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG,
   FROM_TSV_EDITLOG,
   seegprepWarning,
   stemOf,
   subjectOf,
 } from './bids';
+import {
+  DATASET_DESCRIPTION_TEMPLATE,
+  FROM_ANCHOR_QC_IMPLANT3D_PNG,
+  FROM_ANCHOR_QC_RESLICE_PNG,
+  FROM_ANCHOR_QC_SPACING_SVG,
+  FROM_ANCHOR_QC_SPACING_TSV,
+} from './qc/paths';
+import { buildResliceTiles, compositeReslice, ensureDatasetDescription } from './qc/export';
+import { spacingHistogramSvg } from './qc/histogram';
+import { spacingTsv } from './qc/tsv';
 
 const {
   CANONICAL_FIELDNAMES,
@@ -251,6 +263,22 @@ export interface SeegModel {
   setSize(px: number): void;
   jumpTo(id: string): void;
   deleteContact(id: string): void;
+  /**
+   * The QC export sheet (T1, 2026-09-03). `opts.outputFolder`, when given, is a `Save as…`-chosen
+   * folder that overrides the `{derivatives}` default; omitted, the module uses whatever
+   * `host.files.siblings` resolved for this table (`applyDerivativesDefaultSave`'s sibling group),
+   * or reports `'no-derivatives'` for a figure it cannot place either way. `reslice` and `implant3d`
+   * additionally require `OffscreenCanvas`, which is not available outside a real host — a suite
+   * running under vitest reports `'no-canvas'` for both rather than throwing.
+   */
+  exportQc(opts: {
+    spacing: boolean;
+    reslice: boolean;
+    implant3d: boolean;
+    outputFolder?: string;
+  }): Promise<Record<string, 'ok' | 'no-derivatives' | 'no-canvas' | 'error'>>;
+  /** The QC sheet's Save as… override: a folder, through `host.files.saveDialog`. */
+  chooseQcFolder(): Promise<string | null>;
 }
 
 export function createModel(host: ModuleHost): SeegModel {
@@ -278,6 +306,14 @@ export function createModel(host: ModuleHost): SeegModel {
   /** The T1 a `load` operation named and found open, for the block's `source` (§13.6). */
   let t1Path: string | null = null;
   let pendingTsv: string | null = null;
+  /**
+   * The QC export sheet's default output paths, resolved from whichever `host.files.siblings` call
+   * loaded this table (`{derivatives}` templates, `src/qc/paths.ts`'s `FROM_ANCHOR_QC_*` — the same
+   * strings the manifest declares). `{}` when the anchor is not inside a resolvable BIDS derivatives
+   * tree; `runQcExport` falls back to `host.files.saveDialog` in that case, so the sheet still works,
+   * it just has no default folder to preload.
+   */
+  let qcFound: Record<string, string | null> = {};
   let isDirty = false;
   /** Whether the module wants the point tool on its layer at all. */
   let armed = false;
@@ -679,6 +715,7 @@ export function createModel(host: ModuleHost): SeegModel {
     tsvPath = path;
     savePath = null;
     saveSiblings = {};
+    qcFound = {};
     electrode = set.groups[0]?.name ?? null;
     selectedId = null;
     // Everything the *previous* table's session recorded goes with it: the per-electrode operation
@@ -997,6 +1034,21 @@ export function createModel(host: ModuleHost): SeegModel {
 
   // ---- saving -------------------------------------------------------------------------------------
 
+  /**
+   * Applies the `{derivatives}`-resolved corrected-table default (T1, 2026-09-03), if this anchor's
+   * `host.files.siblings` call found one and the user has not already chosen a target via Save as….
+   * Falls back to `savePath === null`, which still routes `doSave` through `doSaveAs`'s own
+   * fallback — the table's own source path — when no BIDS derivatives root resolves.
+   */
+  const applyDerivativesDefaultSave = (found: Record<string, string | null>): void => {
+    if (savePath !== null) return;
+    const corrected = found[FROM_TSV_DERIVATIVES_CORRECTED];
+    if (typeof corrected !== 'string' || corrected === '') return;
+    savePath = corrected;
+    const editlog = found[FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG];
+    saveSiblings = typeof editlog === 'string' && editlog !== '' ? { [EDITLOG_TEMPLATE]: editlog } : {};
+  };
+
   const deletedRecords = (): DeletedContact[] =>
     deleted.map((c) => ({
       name: c.name,
@@ -1056,6 +1108,99 @@ export function createModel(host: ModuleHost): SeegModel {
   const doSave = async (): Promise<{ path: string; editlog: string | null } | null> => {
     if (savePath === null) return doSaveAs();
     return writeFiles(savePath, saveSiblings);
+  };
+
+  // ---- QC export sheet (T1, 2026-09-03) ------------------------------------------------------------
+
+  type QcOutcome = 'ok' | 'no-derivatives' | 'no-canvas' | 'error';
+
+  /** `qcFound`'s value at one of `src/qc/paths.ts`'s `FROM_ANCHOR_QC_*` templates, or null. */
+  const qcTemplate = (template: string): string | null => {
+    const value = qcFound[template];
+    return typeof value === 'string' && value !== '' ? value : null;
+  };
+
+  const doExportSpacing = async (folderOverride: string | null): Promise<QcOutcome> => {
+    const svgPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? 'spacing_qc.svg')}` : qcTemplate(FROM_ANCHOR_QC_SPACING_SVG);
+    const tsvOutPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) ?? 'spacing_qc.tsv')}` : qcTemplate(FROM_ANCHOR_QC_SPACING_TSV);
+    if (svgPath === null || tsvOutPath === null) return 'no-derivatives';
+    try {
+      const descPath = qcTemplate(DATASET_DESCRIPTION_TEMPLATE);
+      if (descPath !== null) await ensureDatasetDescription(host, descPath, seegManifest.version);
+      const svg = spacingHistogramSvg(set, { subjectId: subjectOf(tsvPath ?? '') ?? undefined });
+      const svgResult = await host.files.writeText(svgPath, svg, { backup: true });
+      const tsvResult = await host.files.writeText(tsvOutPath, spacingTsv(set), { backup: true });
+      return svgResult.ok && tsvResult.ok ? 'ok' : 'error';
+    } catch {
+      return 'error';
+    }
+  };
+
+  /**
+   * Reslice and 3-D implant both need `OffscreenCanvas` and, for reslice, `host.scene.sampleVolume`
+   * against the bound CT (and the T1, when one is open) — real host capabilities this module cannot
+   * fabricate in a test run. Both compose through `qc/export.ts` / `qc/implant3d.ts`; see those files'
+   * headers for exactly what a running host would still need to verify.
+   */
+  const doExportReslicePng = async (folderOverride: string | null): Promise<QcOutcome> => {
+    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) ?? 'reslice_qc.png')}` : qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG);
+    if (pngPath === null) return 'no-derivatives';
+    if (typeof OffscreenCanvas === 'undefined' || datasetId === null) return 'no-canvas';
+    try {
+      const t1DatasetId = host.scene.datasets().find((d) => d.path === t1Path)?.id ?? null;
+      const tiles = await buildResliceTiles(host, set, { ctDatasetId: datasetId, t1DatasetId });
+      if (tiles.length === 0) return 'error';
+      const columns = 3;
+      const tileW = 200;
+      const tileH = 220;
+      const rows = Math.ceil(tiles.length / columns);
+      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows);
+      const ctx = canvas.getContext('2d');
+      if (ctx === null) return 'error';
+      compositeReslice(ctx, tiles, tileW, tileH);
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const written = await host.files.writeBinary(pngPath, bytes, { backup: true });
+      return written.ok ? 'ok' : 'error';
+    } catch {
+      return 'error';
+    }
+  };
+
+  // Single capture, not the four-angle tiling the spec asked for: `host.ts` (PR #18) has no
+  // camera-control call, so there is no way to aim the 3-D view before each shot. See
+  // `qc/implant3d.ts`'s header for what changes once one ships.
+  const doExportImplant3dPng = async (folderOverride: string | null): Promise<QcOutcome> => {
+    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? 'implant3d_qc.png')}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
+    if (pngPath === null) return 'no-derivatives';
+    try {
+      const png = await host.capture.screenshot({ target: 'view', background: 'theme' });
+      const written = await host.files.writeBinary(pngPath, png, { backup: true });
+      return written.ok ? 'ok' : 'error';
+    } catch {
+      return 'error';
+    }
+  };
+
+  const runQcExport = async (opts: {
+    spacing: boolean;
+    reslice: boolean;
+    implant3d: boolean;
+    outputFolder?: string;
+  }): Promise<Record<string, QcOutcome>> => {
+    const results: Record<string, QcOutcome> = {};
+    if (opts.spacing) results['spacing'] = await doExportSpacing(opts.outputFolder ?? null);
+    if (opts.reslice) results['reslice'] = await doExportReslicePng(opts.outputFolder ?? null);
+    if (opts.implant3d) results['implant3d'] = await doExportImplant3dPng(opts.outputFolder ?? null);
+    const ok = Object.values(results).filter((r) => r === 'ok').length;
+    const total = Object.keys(results).length;
+    if (total > 0) {
+      host.ui.toast(
+        ok === total ? 'info' : 'warn',
+        `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written.`
+      );
+    }
+    return results;
   };
 
   /**
@@ -1630,6 +1775,8 @@ export function createModel(host: ModuleHost): SeegModel {
       }
       applyTable(path, text);
       const found = await host.files.siblings(path);
+      qcFound = found;
+      applyDerivativesDefaultSave(found);
       const bundle = bundleOf(found);
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
       if (bundle.ct !== null && datasetId === null) {
@@ -1640,10 +1787,14 @@ export function createModel(host: ModuleHost): SeegModel {
     },
 
     async onSibling(anchor, found) {
+      qcFound = found;
       const bundle = bundleOf(found);
       if (bundle.tsv !== null && tsvPath === null) {
         const text = await host.files.readText(bundle.tsv);
-        if (text !== null) applyTable(bundle.tsv, text);
+        if (text !== null) {
+          applyTable(bundle.tsv, text);
+          applyDerivativesDefaultSave(found);
+        }
       } else if (datasetId === null || pendingTsv !== null) {
         // The CT arrived after the table: bind and build.
         if (bindVolume() && pendingTsv !== null) {
@@ -1750,6 +1901,18 @@ export function createModel(host: ModuleHost): SeegModel {
 
     deleteContact(id) {
       doDelete(id);
+    },
+
+    exportQc(opts) {
+      return runQcExport(opts);
+    },
+
+    async chooseQcFolder() {
+      const defaultName = qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? 'qc.svg';
+      const target = await host.files.saveDialog('qc-spacing-svg', defaultName);
+      if (target === null) return null;
+      const slash = Math.max(target.path.lastIndexOf('/'), target.path.lastIndexOf('\\'));
+      return slash === -1 ? null : target.path.slice(0, slash);
     },
   };
 }

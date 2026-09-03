@@ -40,6 +40,20 @@ export const FROM_TSV_CT = '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz';
 export const FROM_TSV_COORDSYSTEM = '{sub}_space-{space}_coordsystem.json';
 export const FROM_TSV_EDITLOG = '{stem}_editlog.json';
 
+/**
+ * The default **save target** for the corrected table, under the dataset's own `derivatives/`
+ * rather than beside `seegprep`'s output (2026-09-03, T1). `{derivatives}` is resolved by main by
+ * walking up from the anchor; when no BIDS root is found the candidate simply does not resolve, and
+ * the editor falls back to the table's own source path (`seegprepWarning` below is what a save to
+ * *that* fallback is checked against). `seegprep`'s overwrite guard now globs both
+ * `*_electrodes_editlog.json` and `*_electrodes_corrected_editlog.json`, so both stems are
+ * legitimate and `seegprepWarning` accepts either.
+ */
+export const FROM_TSV_DERIVATIVES_CORRECTED =
+  '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv';
+export const FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG =
+  '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json';
+
 /** What a bundle probe found beside the anchor. Every field is a path or `null`. */
 export interface SubjectBundle {
   tsv: string | null;
@@ -110,10 +124,11 @@ export function seegprepWarning(path: string): string | null {
   const name = baseNameOf(path);
   const stem = stemOf(name);
   const directory = /(?:^|[/\\])ieeg[/\\][^/\\]+$/.test(path);
-  if (!stem.endsWith('_electrodes')) {
+  if (!stem.endsWith('_electrodes') && !stem.endsWith('_electrodes_corrected')) {
     return (
-      `“${name}” does not end in _electrodes.tsv, so seegprep’s --force guard will not see its ` +
-      `editlog (it globs *_electrodes_editlog.json).`
+      `“${name}” does not end in _electrodes.tsv or _electrodes_corrected.tsv, so seegprep’s ` +
+      `--force guard will not see its editlog (it globs *_electrodes_editlog.json and ` +
+      `*_electrodes_corrected_editlog.json).`
     );
   }
   if (!directory) {

@@ -22,11 +22,20 @@ import {
   FROM_CT_TSV,
   FROM_TSV_COORDSYSTEM,
   FROM_TSV_CT,
+  FROM_TSV_DERIVATIVES_CORRECTED,
+  FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG,
   FROM_TSV_EDITLOG,
   seegprepWarning,
   stemOf,
   subjectOf,
 } from '../src/bids';
+import {
+  FROM_ANCHOR_QC_IMPLANT3D_PNG,
+  FROM_ANCHOR_QC_RESLICE_PNG,
+  FROM_ANCHOR_QC_SPACING_SVG,
+  FROM_ANCHOR_QC_SPACING_TSV,
+  DATASET_DESCRIPTION_TEMPLATE,
+} from '../src/qc/paths';
 
 const DERIV = '/data/bids/derivatives/seegprep/sub-P076';
 
@@ -107,12 +116,35 @@ describe('seegprepWarning', () => {
 describe('the manifest and the module agree about the BIDS layout', () => {
   it('declares the same sibling templates the module reads back', () => {
     const [fromCt, fromTsv] = seegManifest.siblings ?? [];
+    const qcCandidates = [
+      FROM_TSV_DERIVATIVES_CORRECTED,
+      FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG,
+      FROM_ANCHOR_QC_SPACING_SVG,
+      FROM_ANCHOR_QC_SPACING_TSV,
+      FROM_ANCHOR_QC_RESLICE_PNG,
+      FROM_ANCHOR_QC_IMPLANT3D_PNG,
+      DATASET_DESCRIPTION_TEMPLATE,
+    ];
     expect(fromCt?.candidates).toEqual([
       FROM_CT_TSV,
       FROM_CT_COORDSYSTEM,
       FROM_CT_EDITLOG,
       FROM_CT_T1,
+      ...qcCandidates,
     ]);
-    expect(fromTsv?.candidates).toEqual([FROM_TSV_CT, FROM_TSV_COORDSYSTEM, FROM_TSV_EDITLOG]);
+    expect(fromTsv?.candidates).toEqual([
+      FROM_TSV_CT,
+      FROM_TSV_COORDSYSTEM,
+      FROM_TSV_EDITLOG,
+      ...qcCandidates,
+    ]);
+  });
+});
+
+describe('the corrected-table default save path', () => {
+  it('accepts an _electrodes_corrected stem, like seegprep’s guard now does', () => {
+    expect(
+      seegprepWarning(`${DERIV}/../tetravox/sub-P076/ieeg/sub-P076_space-T1w_electrodes_corrected.tsv`)
+    ).toBeNull();
   });
 });
