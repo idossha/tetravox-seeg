@@ -78,9 +78,10 @@ Drop, or **Open…**, either of these and the module finds the other beside it:
 | the registered CT    | `derivatives/seegprep/sub-<id>/ct/sub-<id>_acq-bone_space-T1w_ct.nii.gz` |
 | the electrodes table | `derivatives/seegprep/sub-<id>/ieeg/sub-<id>_space-T1w_electrodes.tsv`   |
 
-From the CT it also looks for the `_coordsystem.json`, an existing `_editlog.json`, and the subject's
-T1 at `derivatives/SimNIBS/sub-<id>/m2m_<id>/T1.nii.gz`. Nothing is searched for: the module knows those
-four names and asks whether each one exists.
+From the CT it also looks for the `_coordsystem.json`, an existing `_editlog.json`, `seegprep`'s
+`sub-<id>_electrodes-geometry.json`, and the subject's T1 at
+`derivatives/SimNIBS/sub-<id>/m2m_<id>/T1.nii.gz`. Nothing is searched for: the module knows those
+five names and asks whether each one exists.
 
 Opening the **table first** is fine — it is read and held until a volume arrives, and the panel says so.
 The CT has to be open for anything that needs image intensities (that is Snap), because a module reads
@@ -122,6 +123,7 @@ operations (`ghost`, `wire`, `size`) — which of them are on is part of what a 
 | add contacts              | **Add** (`a`) — then every click in a pane drops a new contact on the chosen electrode   |
 | walk the electrode        | `n` / `p`, or the list — the crosshair follows, so every pane slices through the contact |
 | snap to the metal         | `s` for the selected contact, `⇧S` for the whole electrode, **Snap all…** for every one  |
+| add the missing contacts  | **Extend**, when the model says the shaft has more than the table does                   |
 | re-fit the shaft          | `f`                                                                                      |
 | renumber from the tip     | **Renumber tip-first**                                                                   |
 | flip which end is the tip | `t`                                                                                      |
@@ -141,10 +143,91 @@ it. The contact you clicked is now on the slice, and a second click grabs it in 
 you click the marker you can see, the view comes to it, and you drag from there — you never have to scroll
 onto a contact first to be able to pick it.
 
-**Snap** moves a contact to the intensity-weighted peak of a small box around it — the metal it is
-inside — at the radius the panel's field sets (0.5–5 mm, 1.5 mm by default). A contact with nothing
-bright near it does not move and is not counted. _Snap all_ asks first, because it touches every
-electrode at once; one snap of any scope is a single undo step.
+**Snap** puts a contact **on its electrode's shaft**, at the point along it where the CT is
+brightest. A depth electrode is one rigid rod, so its contacts are collinear by construction — and a
+snap that could move a contact sideways is a snap with a degree of freedom the hardware does not
+have. What it does, whatever the scope and whether or not the model is known:
+
+1. fits the electrode's axis through all of its contacts, rejecting one that is off the line;
+2. puts each contact at the **orthogonal projection onto that axis** of its blob's intensity-weighted
+   centroid — the sideways part of the centroid is what the hardware forbids, the along-axis part is
+   measured metal;
+3. re-fits the axis through those centroids and retakes the projections. **That is the only sideways
+   adjustment, and it moves the whole electrode.** No contact ever carries a lateral offset of its
+   own;
+4. reads the CT along the axis in a 1 mm tube, every 0.1 mm, through ±0.45 × the shaft's own pitch, to
+   decide **whether a contact has metal at all** — under 35% of the electrode's median peak it has
+   none, and takes the model's slot if a model is known or keeps its own projection if not. The
+   profile says whether, never where: between 5 mm-pitch contacts it is a bloom-merged ripple rather
+   than one peak per contact;
+5. and where the model is known, anchors the manufacturer's gap template on the contacts that have
+   metal and uses it as a **check**: a detected contact more than 0.35 × the local gap from its slot
+   stays on its metal and is flagged in the per-gap table, because that is the shaft a human should
+   look at.
+
+The panel prints which mode ran: `snapped along axis · model BF10R-SP21X`, or
+`· measured pitch 5.0 mm` when nothing resolved a model. Without a model the measured median pitch
+sizes the search **window** and nothing else — an observed median is not a datasheet, and it never
+re-spaces a shaft.
+
+The radius field (0.5–5 mm, 1.5 mm by default) is what the fallback path uses: on a host without
+`sampleVolume` the snap reads `peakCentroid` at that radius and **projects its answer onto the
+axis**, keeping which blob and where along it, discarding the sideways part. A contact with nothing
+bright near it does not move. An electrode with fewer than three contacts has no rod to fit and keeps
+the old per-contact centroid snap, alone.
+
+Why it is like this: on P073, snapping each contact to its own blob's intensity centroid made the
+contacts zigzag 0.3–0.7 mm around the straight trajectory line the drag guide draws — CT bloom is not
+symmetric about the rod, so each centroid was pulled a different way. The contacts are on a rod;
+now the snap says so.
+
+_Snap all_ asks first, because it touches every electrode at once; one snap of any scope is a single
+undo step, and none of them renumbers.
+
+### Which electrode is this?
+
+`seegprep`'s catalogue knows forty-four depth-electrode models, and knowing which one a shaft is
+changes what "correct" means for it. An Ad-Tech Behnke-Fried lead is **3.0 mm** between contacts 1
+and 2 and **5.5 mm** from there out; Re-fit, which re-spaces at the shaft's own *median* gap, turns
+that into a uniform 5.5 mm and leaves contact 2 two and a half millimetres off the metal it is
+inside. So the panel has a model section, and it looks in three places in this order:
+
+| Where                                                       | What it gives                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------ |
+| `sub-<id>_electrodes-geometry.json`, where it names a model | this subject's own per-electrode gaps, from seegprep    |
+| the bundled gap table, keyed by a model or part number       | the manufacturer's geometry for that model             |
+| that sidecar's `model: "n/a"` rows                           | the shaft's **measured** median pitch, labelled as such |
+| nothing                                                      | today's behaviour: Re-fit's observed median gap        |
+
+The third row needs saying. seegprep's sidecar always states a `spacing_gaps_mm`: when *its*
+catalogue matched nothing it writes `model: "n/a"` and fills the vector with the shaft's own median
+pitch repeated, so a QC reader always has a nominal to compare against. That is a useful number and
+it is emphatically **not** a datasheet — a Behnke-Fried lead's measured median is 5.5 mm and its
+first gap is 3.0 mm. So the module reads `"n/a"` as *no model* (a model called "n/a" is not a thing
+to show a clinician, and reading it literally would stop the search), consults the catalogue with the
+keys seegprep never saw — the table's `model` column, a site part number — and only then falls back
+to the measured vector, shown as **measured pitch · sidecar-measured** rather than as a part number.
+
+The key is the table's own `model` column, or a part number from the site's electrode list, matched
+as a **case-insensitive prefix** — `BF10R-SP21X-0C3` finds `BF10R-SP21X`, so nobody has to know which
+trailing segments are options. **List…** reads that list (`name,target,part_number,n_contacts,…`)
+through a file sheet; it has to be a sheet rather than an automatic discovery, because the list lives
+at `sub-<id>/etc/sub-<id>_electrodes.csv`, four directories above the derivative's `ieeg/`, and a
+module's sibling rule may ascend at most three.
+
+**No model at all is a supported state, not a degraded one.** With nothing resolved the module does
+exactly what it did before this existed, and the section says so rather than pretending.
+
+There is **no separate "snap to model" button**. A model, when one resolves, changes what the
+ordinary Snap does — step 4 above — rather than offering a second kind of snap to choose between.
+The gaps are the manufacturer's and are never stretched, so the template has exactly one free
+parameter and a wrong model cannot be made to fit; the per-gap table is what says so, flagging
+anything more than 0.75 mm out.
+
+**Extend** places the contacts a shaft is missing, when the model says there are more than the table
+has. They go beyond the *entry* end at the model's spacing and are then snapped, and they save with
+`status: added` like any contact placed by hand. It asks first, because it adds rows to a clinical
+table.
 
 **Re-fit shaft** fits a line through the electrode's contacts, projects them onto it, re-spaces them
 evenly at the _median_ observed gap — median, so one missing contact does not stretch the rest — and
@@ -173,7 +256,7 @@ things happen, in this order:
    `electrode`, `contact` and `status` appended if they were not already there. `status` is `kept`,
    `edited` (moved by more than 0.001 mm) or `added`; a row that has not moved keeps whatever status the
    localiser gave it, so `located` and `gapfilled` survive;
-3. `<stem>_editlog.json` is written beside it, recording what changed — counts, and one entry per
+3. `<stem>_editlog.json` is written beside it ([what is in it](docs/EDITLOG.md)), recording what changed — counts, and one entry per
    contact added, moved, **renamed** or deleted, with where it was and where it is now. Renumber and
    Re-fit relabel contacts that may not have moved at all, and those entries carry the name the table
    had (`renamed_from`) beside the name it has now: relabelling is the one edit that changes how the
@@ -241,7 +324,9 @@ writing a table in which everything looks new.
 ### From a job file
 
 Every button is also a job-file operation, so a batch can do what the panel does — `load`, `snap`,
-`refit`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`, `stats` and `save`. `flip-tip` matters more
+`extend`, `refit`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`,
+`stats` and `save`. `snap` reports, per electrode, which mode ran (`axis` or `axis-model`) and the
+model it used, so a batch learns what it got. `flip-tip` matters more
 than it looks: which end of a shaft is contact 1 comes from a heuristic, `renumber` applies whatever the
 tip currently is, and this is how a batch corrects the shaft the heuristic read backwards — the same thing
 `t` does in the panel. See [Automation](https://idossha.github.io/tetravox/AUTOMATION.html).
@@ -256,7 +341,7 @@ node scripts/fetch-contacts.mjs  # the shared contacts kit, for the tests
 pnpm run typecheck               # tsc against the SDK's declarations
 pnpm run test                    # vitest
 pnpm run build                   # dist/index.js + dist/manifest.json
-pnpm run check                   # zero imports, size, and the app's own manifest validator
+pnpm run check                   # zero imports, size, the manifest validator, the catalogue pin
 ```
 
 `pnpm run verify` is all five in order, and is what CI runs.
@@ -295,6 +380,27 @@ That inlined shim reads `globalThis.__tetravoxModuleSdk`, which the app assigns 
 activates. It is how a downloaded panel renders inside the app's **own** React tree: a second copy of
 React would be an "invalid hook call" the first time the panel drew.
 
+### The bundled electrode catalogue
+
+`src/catalogue.gen.ts` is **generated**, from `seegprep`'s own
+`src/seegprep/data/electrode_models.json`. seegprep owns the numbers — two programs disagreeing about
+how far apart an RD10R-SP05X's contacts are would give a clinician two different answers to "is this
+shaft right" — and this repository owns the copy that ships inside the bundle:
+
+```sh
+node scripts/gen-catalogue.mjs --from ../seegprep/src/seegprep/data/electrode_models.json
+node scripts/gen-catalogue.mjs --check   # part of `pnpm run check`
+```
+
+`catalogue.pin.json` records the sha256 of the source it came from *and* of the generated file, like
+`contacts.pin.json` does for the kit. `--check` verifies the generated file always, and the source
+only when a seegprep checkout is actually present — so CI, which has never seen seegprep, still
+catches a hand-edited catalogue.
+
+It is baked in rather than read at run time because a module bundle has no `node_modules`, no import
+map and no network, and a lab's subject directory is not guaranteed to carry seegprep's package data.
+Forty-four models is 3 kB.
+
 ### The shared contacts kit
 
 `contacts.*` — the TSV reader, the editlog, the line fit, the snap, the palette — is Tetravox's, not
@@ -319,6 +425,8 @@ src/
   Panel.tsx     chrome: reads the model through useSyncExternalStore, one call per control
   block.ts      the module's own record inside a scene file
   shaft.ts      depth-electrode geometry — the tip rule, re-fit, renumber
+  modelsnap.ts  which electrode this *is* — model resolution, the axis snap, the template slide, extend
+  catalogue.gen.ts  GENERATED: the gap table, from seegprep's electrode_models.json
   bids.ts       the seegprep derivative layout
 test/           vitest; test/setup.ts is the app's half of the SDK global
 scripts/        build, validate, fetch, release

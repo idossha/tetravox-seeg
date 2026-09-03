@@ -15,6 +15,7 @@
 
 import { contacts } from "@tetravox/module-sdk";
 import type { Contact, ContactSet, vec3 } from "@tetravox/module-sdk";
+import { perpendicularTo } from "./modelsnap";
 
 const { contactsOf, distanceMm, fitLine, projectOntoLine } = contacts;
 
@@ -46,47 +47,28 @@ function midpoint(a: vec3, b: vec3): vec3 {
   return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
 }
 
-function cross(a: vec3, b: vec3): vec3 {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-}
-
-function length(v: vec3): number {
-  return Math.hypot(v[0], v[1], v[2]);
-}
+/*
+ * The perpendicular the labels are offset along comes from `modelsnap.ts`, which needs the same
+ * construction to build its sampling tube: whichever world basis vector is *least* aligned with the
+ * axis, crossed into it. Crossing with world-up — the obvious version — degenerates to zero for a
+ * vertical shaft, which is exactly the case a depth-electrode guide most has to handle. It is
+ * derived from the fitted axis alone, so the same shaft always picks the same side and the labels
+ * never flip mid-drag.
+ */
 
 /**
- * A unit vector perpendicular to `axis`, deterministic for a given axis and well-defined for every
- * orientation — including a purely vertical shaft, which is common for depth electrodes.
+ * A distance readout for one neighbour pair, always a true 3D distance, offset beside the shaft.
  *
- * Crossing the axis with world-up is the obvious construction, and it is what a naive version of
- * this would reach for, but it degenerates to the zero vector whenever the axis IS (close to)
- * world-up — exactly the vertical-shaft case this guide most needs to handle. Instead, the reference
- * vector is picked as whichever world basis axis (X, Y or Z) has the *smallest* absolute component
- * in `axis`; that basis vector is, by construction, never close to parallel with `axis`, so the
- * cross product is never close to zero. There is no camera available to a module, so this is a
- * stable world-space perpendicular, not a screen-facing one — but it is derived purely from the
- * fitted axis, so the same shaft always picks the same side and the labels never flip mid-drag.
+ * With a model resolved for the electrode the label reads `4.9 / 5.0 mm` — measured first, then
+ * what the manufacturer says that gap is. Measured first because it is the number that changes
+ * while the contact is held, and the model's is the constant it is being aimed at. `modelMm` is
+ * `null` for an electrode with no model, and the label is then the bare measurement it always was.
  */
-function perpendicularOf(axis: vec3): vec3 {
-  const ax = Math.abs(axis[0]);
-  const ay = Math.abs(axis[1]);
-  const az = Math.abs(axis[2]);
-  // The world basis vector least aligned with `axis`.
-  const reference: vec3 = ax <= ay && ax <= az ? [1, 0, 0] : ay <= az ? [0, 1, 0] : [0, 0, 1];
-  const perp = cross(axis, reference);
-  const len = length(perp);
-  return len > 0 ? [perp[0] / len, perp[1] / len, perp[2] / len] : [0, 0, 0];
-}
-
-/** A distance readout for one neighbour pair, always a true 3D distance, offset beside the shaft. */
 function labelFor(
   a: vec3,
   b: vec3,
   offset: vec3,
+  modelMm: number | null,
 ): { position: vec3; text: string } {
   const mid = midpoint(a, b);
   const position: vec3 = [
@@ -96,7 +78,10 @@ function labelFor(
   ];
   return {
     position: position.every((v) => Number.isFinite(v)) ? position : mid,
-    text: `${distanceMm(a, b).toFixed(1)} mm`,
+    text:
+      modelMm === null
+        ? `${distanceMm(a, b).toFixed(1)} mm`
+        : `${distanceMm(a, b).toFixed(1)} / ${modelMm.toFixed(1)} mm`,
   };
 }
 
@@ -141,7 +126,19 @@ function fittedAxis(
     : EMPTY_AXIS;
 }
 
-export function dragGuide(set: ContactSet, draggedId: string): DragGuide | null {
+/**
+ * The overlay for a drag in flight.
+ *
+ * `modelGapsMm` is the electrode's model spacing, tip-first, or `null` — `modelGapsMm[k − 1]` is the
+ * gap between contacts `k` and `k + 1`, which is the shape `ElectrodeModel.gapsMm` already has. The
+ * pair is indexed by **ordinal**, like the neighbour search itself, so a table numbered from the
+ * other end (a flipped tip) reads the same gap the panel's table does.
+ */
+export function dragGuide(
+  set: ContactSet,
+  draggedId: string,
+  modelGapsMm: readonly number[] | null = null,
+): DragGuide | null {
   const dragged = set.contacts.find((c) => c.id === draggedId);
   if (dragged === undefined) return null;
 
@@ -162,11 +159,25 @@ export function dragGuide(set: ContactSet, draggedId: string): DragGuide | null 
   const fit = fitLine(fitPositions);
   // Derived from the fitted axis alone (never from the dragged position), so both labels of one
   // shaft land on the same side and stay there for the length of the drag.
-  const offset = fit === null ? ([0, 0, 0] as vec3) : perpendicularOf(fit.axis);
+  const offset = fit === null ? ([0, 0, 0] as vec3) : perpendicularTo(fit.axis);
+
+  // The gap between ordinals k and k + 1 is `modelGapsMm[k - 1]`. A gap the model does not reach —
+  // an electrode carrying more contacts than its model has — is `null` rather than the last one
+  // repeated, so the label never states a number the manufacturer did not.
+  const modelGap = (lowerOrdinal: number): number | null =>
+    modelGapsMm?.[lowerOrdinal - 1] ?? null;
 
   const labels: { position: vec3; text: string }[] = [];
-  if (below !== undefined) labels.push(labelFor(below.position, dragged.position, offset));
-  if (above !== undefined) labels.push(labelFor(dragged.position, above.position, offset));
+  if (below !== undefined) {
+    labels.push(
+      labelFor(below.position, dragged.position, offset, modelGap(below.ordinal)),
+    );
+  }
+  if (above !== undefined) {
+    labels.push(
+      labelFor(dragged.position, above.position, offset, modelGap(dragged.ordinal)),
+    );
+  }
 
   const axis = fittedAxis(fit, group.map((c) => c.position));
 

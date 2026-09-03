@@ -34,11 +34,20 @@ export const FROM_CT_TSV = '../ieeg/{sub}_space-{space}_electrodes.tsv';
 export const FROM_CT_COORDSYSTEM = '../ieeg/{sub}_space-{space}_coordsystem.json';
 export const FROM_CT_EDITLOG = '../ieeg/{sub}_space-{space}_electrodes_editlog.json';
 export const FROM_CT_T1 = '../../../SimNIBS/{sub}/m2m_{id}/T1.nii.gz';
+/**
+ * seegprep's per-electrode geometry sidecar (seegprep PR #2).
+ *
+ * `{"LHIP": {"model": "BF10R-SP21X", "contact_length_mm": 1.57, "spacing_gaps_mm": [3.0, 5.5, …]}}`
+ * — the geometry of *this subject's* implant, which is why it outranks the bundled catalogue. No
+ * `space` entity: the distance between two contacts on a rod is not a fact about a coordinate space.
+ */
+export const FROM_CT_GEOMETRY = '../ieeg/{sub}_electrodes-geometry.json';
 
 /** Templates the electrodes table anchors. */
 export const FROM_TSV_CT = '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz';
 export const FROM_TSV_COORDSYSTEM = '{sub}_space-{space}_coordsystem.json';
 export const FROM_TSV_EDITLOG = '{stem}_editlog.json';
+export const FROM_TSV_GEOMETRY = '{sub}_electrodes-geometry.json';
 
 /**
  * The default **save target** for the corrected table, under the dataset's own `derivatives/`
@@ -61,9 +70,18 @@ export interface SubjectBundle {
   t1: string | null;
   coordsystem: string | null;
   editlog: string | null;
+  /** seegprep's per-electrode geometry sidecar, when the subject has one. */
+  geometry: string | null;
 }
 
-const EMPTY: SubjectBundle = { tsv: null, ct: null, t1: null, coordsystem: null, editlog: null };
+const EMPTY: SubjectBundle = {
+  tsv: null,
+  ct: null,
+  t1: null,
+  coordsystem: null,
+  editlog: null,
+  geometry: null,
+};
 
 /**
  * Read a `host.files.siblings` result — keyed by the manifest's own templates — as a bundle.
@@ -86,6 +104,7 @@ export function bundleOf(found: Record<string, string | null>): SubjectBundle {
     t1: at(FROM_CT_T1),
     coordsystem: at(FROM_CT_COORDSYSTEM, FROM_TSV_COORDSYSTEM),
     editlog: at(FROM_CT_EDITLOG, FROM_TSV_EDITLOG),
+    geometry: at(FROM_CT_GEOMETRY, FROM_TSV_GEOMETRY),
   };
 }
 

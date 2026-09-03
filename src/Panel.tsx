@@ -24,7 +24,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "@tetravox/module-sdk";
-import type { SeegModel, SeegRow } from "./editor";
+import type { SeegModel, SeegRow, SeegView } from "./editor";
 
 const CHORDS: Record<string, string> = {
   add: "a",
@@ -178,6 +178,167 @@ function ContactRow({
         ✕
       </button>
     </li>
+  );
+}
+
+/**
+ * The model section — everything the panel says about *which electrode this is*.
+ *
+ * Kept as its own component rather than four more blocks inside `SeegPanel`, because it is one
+ * subject: the model, where it came from, whether the shaft has all its contacts, and every gap
+ * measured against the manufacturer's. It renders whether or not a model resolved — with none, it
+ * says so and says what happens instead, which is the state a user with no catalogue and no sidecar
+ * is permanently in and should not have to guess about.
+ *
+ * **Every distance here is 3-D**, like every distance this module prints: `measured` is the
+ * centre-to-centre distance between two contacts in space, not their separation in the slice.
+ */
+function ModelSection({
+  view,
+  model: controller,
+}: {
+  view: SeegView;
+  model: SeegModel;
+}): React.JSX.Element {
+  const command =
+    (id: string) =>
+    (event: React.MouseEvent<HTMLElement>): void => {
+      blur(event);
+      void controller.run(id);
+    };
+  const model = view.model;
+  const incomplete = model !== null && model.present < model.expected;
+  // A `sidecar-measured` geometry is this shaft's own median pitch repeated — seegprep's stand-in
+  // when *its* catalogue matched nothing — not a manufacturer's vector. It is worth snapping to and
+  // worth measuring against, and it must never be read as a datasheet, so it is named as what it is.
+  const measured = model?.source === 'sidecar-measured';
+
+  return (
+    <div
+      data-testid="seeg-model"
+      data-model={model?.name ?? ''}
+      data-source={model?.source ?? 'none'}
+      className="flex flex-col gap-1 border-t border-tvx-line pt-1"
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          data-testid="seeg-model-name"
+          className="min-w-0 flex-1 truncate"
+          title={
+            model === null
+              ? 'No geometry sidecar entry, and no model column or part number the catalogue recognises'
+              : model.source === 'sidecar'
+                ? 'from this subject’s seegprep geometry sidecar'
+                : measured
+                  ? 'seegprep matched no model either, so this is the shaft’s own measured median ' +
+                    'pitch repeated — a nominal to compare against, not a manufacturer’s geometry'
+                  : 'from the bundled seegprep catalogue, matched on the part number'
+          }
+        >
+          {model === null ? (
+            <span className="text-tvx-dim">no model — Re-fit uses the observed median gap</span>
+          ) : (
+            <>
+              <span className={measured ? 'text-tvx-warn' : 'text-tvx-text'}>
+                {measured ? 'measured pitch' : model.name}
+              </span>{' '}
+              <span className="text-tvx-dim">· {model.source}</span>
+            </>
+          )}
+        </span>
+        {model !== null && (
+          <span
+            data-testid="seeg-model-count"
+            className={`shrink-0 tabular-nums ${incomplete ? 'text-tvx-warn' : 'text-tvx-dim'}`}
+            title="contacts present, of the number this model has"
+          >
+            {model.present} / {model.expected}
+          </span>
+        )}
+        <button
+          type="button"
+          data-testid="seeg-model-list"
+          className="tvx-btn tvx-btn-sm shrink-0"
+          title="Read a site electrode list (name, part_number, n_contacts) for its part numbers"
+          onClick={(event) => {
+            blur(event);
+            void controller.loadElectrodeList();
+          }}
+        >
+          List…
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          data-testid="seeg-extend"
+          className="tvx-btn"
+          disabled={!incomplete}
+          title={
+            model === null
+              ? 'This electrode has no model, so there is no count to extend to'
+              : incomplete
+                ? `Place the ${model.expected - model.present} missing contacts beyond the entry end at the ${measured ? 'measured' : 'model’s'} spacing (asks first)`
+                : 'This electrode already has every contact its model has'
+          }
+          onClick={command('extend')}
+        >
+          Extend
+        </button>
+      </div>
+
+      {model !== null && model.gaps.length > 0 && (
+        <table
+          data-testid="seeg-model-gaps"
+          className="w-full tabular-nums"
+          /* A real table, not a flex list: the four columns are a small numeric matrix and a
+             screen reader reading it as one row of prose would be reading it wrong. */
+        >
+          <thead className="text-tvx-dim">
+            <tr>
+              <th className="w-10 text-left font-normal">gap</th>
+              <th className="text-right font-normal" title="3-D centre-to-centre distance">
+                3-D
+              </th>
+              <th className="text-right font-normal" title="what this model says the gap is">
+                model
+              </th>
+              <th className="text-right font-normal" title="measured − model">
+                Δ
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {model.gaps.map((gap) => (
+              <tr
+                key={gap.index}
+                data-testid={`seeg-gap-${gap.index}`}
+                data-flagged={gap.flagged}
+                className={gap.flagged ? 'text-tvx-warn' : 'text-tvx-dim'}
+              >
+                <td className="text-left">
+                  {gap.index}–{gap.index + 1}
+                </td>
+                <td className="text-right">{gap.measuredMm.toFixed(2)}</td>
+                <td className="text-right">{gap.modelMm.toFixed(2)}</td>
+                <td className="text-right">
+                  {gap.residualMm >= 0 ? '+' : '−'}
+                  {Math.abs(gap.residualMm).toFixed(2)}
+                  {gap.flagged && ' !'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {model !== null && model.flagged > 0 && (
+        <p data-testid="seeg-model-flags" className="text-tvx-warn">
+          {model.flagged} of {model.gaps.length} gaps are more than 0.75 mm from the model.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -358,7 +519,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           disabled={view.selectedId === null}
           title={label(
             "snap",
-            "Snap the selected contact to the local CT peak",
+            "Put the selected contact on its electrode's fitted axis, at the CT peak along it",
           )}
           onClick={command("snap")}
         >
@@ -370,7 +531,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           className="tvx-btn"
           title={label(
             "snap-electrode",
-            "Snap every contact of this electrode",
+            "Put every contact of this electrode on its fitted axis, at the CT peak along it",
           )}
           onClick={command("snap-electrode")}
         >
@@ -380,12 +541,19 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-snap-all"
           className="tvx-btn"
-          title="Snap every contact of every electrode (asks first)"
+          title="Snap every contact of every electrode onto its own shaft axis (asks first)"
           onClick={command("snap-all")}
         >
           Snap all…
         </button>
       </div>
+
+      {/* There is one Snap now; this line is the only way to tell which mode ran. */}
+      {view.snapNote !== null && (
+        <p data-testid="seeg-snap-mode" className="text-tvx-dim">
+          {view.snapNote}
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-1">
         <button
@@ -568,6 +736,11 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           ))}
         </svg>
       )}
+
+      {/* The model section is its own component and its own block: what electrode this *is* is a
+          different subject from where its contacts are, and it renders whether or not one
+          resolved. */}
+      <ModelSection view={view} model={model} />
 
       </div>
 
