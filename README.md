@@ -274,6 +274,44 @@ which is the in-session undo of everything; the `.bak` is the on-disk one.
 carries a `•`, and closing the window, starting a new scene, opening another one or closing the CT all
 ask first.
 
+**By default, Save writes the corrected table** to
+`derivatives/tetravox/sub-<id>/ieeg/sub-<id>_space-<space>_electrodes_corrected.tsv` — a copy under the
+dataset's own `derivatives/`, alongside a matching `..._corrected_editlog.json` — rather than back over
+`seegprep`'s own output; `seegprep`'s `--force` guard now looks for either name. If the table's anchor
+is not inside a BIDS dataset the module can find a `derivatives/` root for, Save falls back to the
+table's own source path, same as before.
+
+### QC exports
+
+The panel's **QC export** section writes three figures plus a spacing table, to
+`derivatives/tetravox/sub-<id>/ieeg/figures/` by default (a `Save as…` there redirects any one of them):
+
+| File                                          | What it shows                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------- |
+| `sub-<id>_desc-spacing_qc.svg`                | A histogram of consecutive-contact 3-D distances, with one dashed line per electrode model's nominal pitch |
+| `sub-<id>_desc-spacing_qc.tsv`                | The distances behind the histogram: `electrode`, `contact_a`, `contact_b`, `distance_mm` |
+| `sub-<id>_desc-reslice_qc.png`                | Every electrode's shaft-axis plane, T1 in grey with a CT bone overlay, tiled 3 to a row |
+| `sub-<id>_desc-implant3d_qc.png`              | Four angles (superior, left, right, anterior) tiled 2×2, with a colour legend |
+
+A `derivatives/tetravox/dataset_description.json` marks the folder as a BIDS derivative, written once
+if it is not already there.
+
+**The 3-D implant figure rotates the camera through four RAS presets** — superior, left, right,
+anterior, in that order, via `host.capture.setView` (Tetravox PR #18) — and screenshots each one.
+There is no camera-restore API, so once the four shots are in hand the module sets the view back to
+`superior` and leaves it there; your 3-D view will be at the superior preset after an export, not
+wherever it was before. On a host built before PR #18 (no `capture.setView`), the export falls back
+to a single capture of whatever the 3-D view already shows and shows a toast noting only the current
+view was captured — `src/qc/implant3d.ts`'s `captureImplant3dViews` owns this behaviour and its
+degraded-host fallback.
+
+**Outside a BIDS derivatives tree**, there is no `{sub}`-shaped default folder to write into. QC
+export asks for one — the same `Save as…` folder chooser — the first time it needs it, and then
+writes every figure you asked for into that folder; cancelling the chooser writes nothing. Filenames
+in that case are built from the loaded table's own stem instead of `sub-<id>`, e.g.
+`<stem>_desc-spacing_qc.svg`, and `dataset_description.json` is written only when a real derivatives
+tree was found.
+
 ### Scenes, and a build without the module
 
 The contacts are ordinary scene layers, so a `*.tetravox.json` written here opens anywhere — including

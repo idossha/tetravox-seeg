@@ -807,6 +807,113 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
           {view.changed} changed
         </span>
       </div>
+
+      <QcExportSheet model={model} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Its own function component rather than more inline JSX because it holds state (`SeegModel` has
+ * no view field for "which figures are checked" — that is a form, not editor state, and does not
+ * belong in the undo/redo/persisted state every other control here shares).
+ */
+function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
+  const [spacing, setSpacing] = useState(true);
+  const [reslice, setReslice] = useState(true);
+  const [implant3d, setImplant3d] = useState(true);
+  const [outputFolder, setOutputFolder] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState<string | null>(null);
+
+  const runExport = (): void => {
+    setBusy(true);
+    setSummary(null);
+    void model
+      .exportQc({
+        spacing,
+        reslice,
+        implant3d,
+        outputFolder: outputFolder ?? undefined,
+      })
+      .then((results) => {
+        const parts = Object.entries(results).map(([k, v]) => `${k}: ${v}`);
+        setSummary(parts.length === 0 ? "Nothing selected." : parts.join(", "));
+      })
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div
+      data-testid="seeg-qc-export"
+      className="flex flex-col gap-1 border-t border-tvx-line pt-1.5 mt-1"
+    >
+      <div className="text-tvx-dim">QC export</div>
+      <label className="flex items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={spacing}
+          onChange={(e: { target: { checked: boolean } }) => setSpacing(e.target.checked)}
+        />
+        Spacing histogram (+ TSV)
+      </label>
+      <label className="flex items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={reslice}
+          onChange={(e: { target: { checked: boolean } }) => setReslice(e.target.checked)}
+        />
+        Per-electrode reslice
+      </label>
+      <label className="flex items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={implant3d}
+          onChange={(e: { target: { checked: boolean } }) => setImplant3d(e.target.checked)}
+        />
+        3-D implant
+      </label>
+      <div className="flex items-center gap-1">
+        <span className="text-tvx-dim truncate" title={outputFolder ?? undefined}>
+          {outputFolder ??
+            "derivatives/tetravox/sub-<id>/ieeg/figures/ (default, once a table is open)"}
+        </span>
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          data-testid="seeg-qc-export-run"
+          className="tvx-btn"
+          disabled={busy || (!spacing && !reslice && !implant3d)}
+          onClick={runExport}
+        >
+          Export
+        </button>
+        <button
+          type="button"
+          data-testid="seeg-qc-export-choose-folder"
+          className="tvx-btn"
+          onClick={() => {
+            void model.chooseQcFolder().then((folder) => {
+              if (folder !== null) setOutputFolder(folder);
+            });
+          }}
+        >
+          Save as…
+        </button>
+        <button
+          type="button"
+          data-testid="seeg-qc-export-clear-folder"
+          className="tvx-btn"
+          disabled={outputFolder === null}
+          onClick={() => setOutputFolder(null)}
+        >
+          Use default folder
+        </button>
+        {summary !== null && (
+          <span className="ml-auto text-tvx-dim">{summary}</span>
+        )}
       </div>
     </div>
   );

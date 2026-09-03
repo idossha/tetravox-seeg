@@ -82,6 +82,44 @@
   through. Those make different claims about a position, and `snapped: true` alone could not tell them
   apart.
 - `extend` is a job-file operation, so a batch has it too.
+- **A QC export sheet**: the panel gained a checklist for a spacing histogram, a per-electrode
+  reslice figure and a 3-D implant figure, plus a `Save as…` to redirect any one of them. Exports
+  land under `derivatives/tetravox/sub-<id>/ieeg/figures/` by default — `sub-<id>_desc-spacing_qc.svg`,
+  `..._desc-reslice_qc.png`, `..._desc-implant3d_qc.png`, `..._desc-spacing_qc.tsv` (electrode,
+  contact_a, contact_b, distance_mm — 3-D world distances) — alongside a
+  `derivatives/tetravox/dataset_description.json` marking the folder as a BIDS derivative, written
+  once if it is not already there. The spacing histogram draws one dashed nominal-pitch line per
+  electrode model present, from the table's own `model` column or `seegprep`'s geometry sidecar.
+  **The 3-D implant figure now captures all four angles.** `host.capture.setView` (Tetravox PR #18)
+  rotates the 3-D view to superior, left, right and anterior in turn — `fit: true` only on the first,
+  since a reset-view need only run once — and each is screenshotted and tiled 2×2 with the electrode
+  legend. There is no camera-restore call in the host API, so once the four shots are taken the module
+  sets the view back to `superior` and leaves it there rather than the angle you had before exporting.
+  On a host built before PR #18 (no `capture.setView`), the export falls back to a single capture of
+  whatever the 3-D view is already showing and warns via toast that only the current view was
+  captured (`src/qc/implant3d.ts`'s `captureImplant3dViews`).
+- **The corrected table's default save location moved** to
+  `derivatives/tetravox/sub-<id>/ieeg/sub-<id>_space-<space>_electrodes_corrected.tsv` (and its
+  matching `..._corrected_editlog.json`), away from writing back over `seegprep`'s own output. A
+  table opened from an anchor with no resolvable BIDS derivatives root still falls back to its own
+  source path, exactly as before. `seegprepWarning` now accepts either `_electrodes` or
+  `_electrodes_corrected` stems, matching `seegprep`'s own `--force` guard.
+- **Vendors a newer `@tetravox/module-sdk`** (`1.0.0-core.0.3.4`, tracking Tetravox PR #18's host
+  API additions — `scene.sampleVolume`, `files.writeBinary`, `.svg`/`.html` in `writeText`,
+  `capture.screenshot`, and `{derivatives}` manifest sibling templates). Pinned as
+  `vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz`; this moves to the official
+  `1.0.0-core.0.3.5` tarball once Tetravox cuts that release.
+- **Fix: QC export no longer silently writes nothing outside a derivatives tree.** A table opened
+  from a plain folder — not inside a resolvable BIDS derivatives tree, and with no `Save as…`
+  override already chosen — made every requested figure report `'no-derivatives'`, so the sheet
+  toasted "QC export: 0/3 figures written" with no way to fix it from there. `runQcExport` now asks
+  the same `Save as…` folder chooser once, up front, whenever any requested figure has no default
+  path, and writes all of them into the chosen folder; cancelling the chooser writes nothing and
+  toasts "QC export cancelled — no output folder." instead of a silent 0/N. Filenames outside BIDS
+  are now built from the loaded table's own stem (`<stem>_desc-spacing_qc.svg`, `..._qc.tsv`,
+  `..._desc-reslice_qc.png`, `..._desc-implant3d_qc.png`) instead of a fixed `spacing_qc.svg`-style
+  name; `derivatives/tetravox/dataset_description.json` is still written only inside an actual
+  derivatives tree.
 
 ## 0.1.6 — 2026-09-02
 
