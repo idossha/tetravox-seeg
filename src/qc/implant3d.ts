@@ -4,16 +4,13 @@
  * Four angles, tiled 2x2: superior, left, right, anterior, each captured after
  * `host.capture.setView` rotates the 3-D view's camera to that RAS preset (host PR #18). Superior
  * is asked with `{ fit: true }` so the reset-view runs once, before the first shot; the remaining
- * three presets reuse that fit. There is no restore call in the host API — `setView` "restores
- * nothing" per its own doc comment — so `captureImplant3dViews` leaves the camera at `superior`
- * once the four shots are in hand, rather than the angle the user had before exporting. That is a
- * deliberate, documented side effect of running a 3-D export, not a bug: the alternative is a host
- * API this module cannot ask for.
+ * three presets reuse that fit. `setView` "restores nothing" per its own doc comment, so
+ * `captureImplant3dViews` leaves the camera at `superior` once the four shots are in hand, rather
+ * than the angle the user had before exporting.
  *
- * **Older hosts.** `host.capture.setView` is undefined on a host built before PR #18. Rather than
- * throw, `captureImplant3dViews` falls back to the pre-PR-18 behaviour: one capture of whatever the
- * 3-D view already shows, and `degraded: true` in its result so the caller can tell the user only
- * the current view was captured.
+ * `host.capture.setView` is undefined on a host built before PR #18. Rather than throw,
+ * `captureImplant3dViews` falls back to one capture of whatever the 3-D view already shows, and
+ * `degraded: true` in its result so the caller can tell the user only the current view was captured.
  */
 
 import type { Group } from '@tetravox/module-sdk';

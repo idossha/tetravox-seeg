@@ -270,8 +270,7 @@ export interface SeegModel {
    * `host.files.siblings` resolved for this table (`applyDerivativesDefaultSave`'s sibling group).
    * When the anchor is not inside a resolvable derivatives tree and no override was given,
    * `runQcExport` asks `chooseQcFolder` once up front and uses the chosen folder for every
-   * requested figure; a cancelled chooser writes nothing and returns `{}`. `'no-derivatives'` is
-   * only still possible for the pathological case of a figure the chooser itself cannot help with.
+   * requested figure; a cancelled chooser writes nothing and returns `{}`.
    * `reslice` and `implant3d` additionally require `OffscreenCanvas`, which is not available
    * outside a real host — a suite running under vitest reports `'no-canvas'` for both rather than
    * throwing.
@@ -1153,12 +1152,7 @@ export function createModel(host: ModuleHost): SeegModel {
     }
   };
 
-  /**
-   * Reslice and 3-D implant both need `OffscreenCanvas` and, for reslice, `host.scene.sampleVolume`
-   * against the bound CT (and the T1, when one is open) — real host capabilities this module cannot
-   * fabricate in a test run. Both compose through `qc/export.ts` / `qc/implant3d.ts`; see those files'
-   * headers for exactly what a running host would still need to verify.
-   */
+  /** Composes through `qc/export.ts`; see its header for what needs a running host to verify. */
   const doExportReslicePng = async (folderOverride: string | null): Promise<QcOutcome> => {
     const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) ?? qcDefaultName('reslice', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG);
     if (pngPath === null) return 'no-derivatives';
@@ -1184,15 +1178,7 @@ export function createModel(host: ModuleHost): SeegModel {
     }
   };
 
-  /**
-   * Four angles (superior/left/right/anterior), each shot after `host.capture.setView` rotates the
-   * 3-D view (host PR #18) — `qc/implant3d.ts`'s `captureImplant3dViews` owns the setView/screenshot
-   * sequence and is what the tests below exercise. On an older host without `setView`, it falls back
-   * to one capture of the current view and reports `degraded: true`, which is surfaced here as a
-   * toast rather than failing the export. Either way the four (or one) PNGs are decoded and tiled by
-   * `compositeImplant3d`, which needs `OffscreenCanvas`/`createImageBitmap` — unavailable outside a
-   * real host, hence the `no-canvas` guard shared with the reslice export.
-   */
+  /** `captureImplant3dViews` (`qc/implant3d.ts`) owns the setView/screenshot sequence; `degraded` is surfaced here as a toast. */
   const doExportImplant3dPng = async (folderOverride: string | null): Promise<QcOutcome> => {
     const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? qcDefaultName('implant3d', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
     if (pngPath === null) return 'no-derivatives';
@@ -1246,10 +1232,8 @@ export function createModel(host: ModuleHost): SeegModel {
   }): Promise<Record<string, QcOutcome>> => {
     let folderOverride = opts.outputFolder ?? null;
     if (folderOverride === null) {
-      // Any requested figure whose default path is unresolvable (the anchor is not inside a
-      // resolvable BIDS derivatives tree) means the sheet has nowhere to put it. Ask once, up
-      // front, rather than per figure, and use the chosen folder for all of them — a user should
-      // not be asked three times for what is obviously one answer.
+      // Ask once, up front, if any requested figure's default path is unresolvable, and use the
+      // chosen folder for all of them.
       const needsFolder =
         (opts.spacing &&
           (qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) === null ||

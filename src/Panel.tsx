@@ -642,13 +642,9 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
 }
 
 /**
- * The QC export sheet (T1, 2026-09-03): checkboxes for the three figures, the default output
- * folder the module resolved off `{derivatives}` (or a note that none resolved), a Save as…
- * override, and one Export button.
- *
- * This is its own function component rather than more inline JSX because it holds state
- * (`SeegModel` has no view field for "which figures are checked" — that is a form, not editor
- * state, and does not belong in the undo/redo/persisted state every other control here shares).
+ * Its own function component rather than more inline JSX because it holds state (`SeegModel` has
+ * no view field for "which figures are checked" — that is a form, not editor state, and does not
+ * belong in the undo/redo/persisted state every other control here shares).
  */
 function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
   const [spacing, setSpacing] = useState(true);
