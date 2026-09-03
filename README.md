@@ -222,6 +222,13 @@ to a single capture of whatever the 3-D view already shows and shows a toast not
 view was captured — `src/qc/implant3d.ts`'s `captureImplant3dViews` owns this behaviour and its
 degraded-host fallback.
 
+**Outside a BIDS derivatives tree**, there is no `{sub}`-shaped default folder to write into. QC
+export asks for one — the same `Save as…` folder chooser — the first time it needs it, and then
+writes every figure you asked for into that folder; cancelling the chooser writes nothing. Filenames
+in that case are built from the loaded table's own stem instead of `sub-<id>`, e.g.
+`<stem>_desc-spacing_qc.svg`, and `dataset_description.json` is written only when a real derivatives
+tree was found.
+
 ### Scenes, and a build without the module
 
 The contacts are ordinary scene layers, so a `*.tetravox.json` written here opens anywhere — including

@@ -267,10 +267,14 @@ export interface SeegModel {
   /**
    * The QC export sheet (T1, 2026-09-03). `opts.outputFolder`, when given, is a `Save as…`-chosen
    * folder that overrides the `{derivatives}` default; omitted, the module uses whatever
-   * `host.files.siblings` resolved for this table (`applyDerivativesDefaultSave`'s sibling group),
-   * or reports `'no-derivatives'` for a figure it cannot place either way. `reslice` and `implant3d`
-   * additionally require `OffscreenCanvas`, which is not available outside a real host — a suite
-   * running under vitest reports `'no-canvas'` for both rather than throwing.
+   * `host.files.siblings` resolved for this table (`applyDerivativesDefaultSave`'s sibling group).
+   * When the anchor is not inside a resolvable derivatives tree and no override was given,
+   * `runQcExport` asks `chooseQcFolder` once up front and uses the chosen folder for every
+   * requested figure; a cancelled chooser writes nothing and returns `{}`. `'no-derivatives'` is
+   * only still possible for the pathological case of a figure the chooser itself cannot help with.
+   * `reslice` and `implant3d` additionally require `OffscreenCanvas`, which is not available
+   * outside a real host — a suite running under vitest reports `'no-canvas'` for both rather than
+   * throwing.
    */
   exportQc(opts: {
     spacing: boolean;
@@ -311,8 +315,8 @@ export function createModel(host: ModuleHost): SeegModel {
    * The QC export sheet's default output paths, resolved from whichever `host.files.siblings` call
    * loaded this table (`{derivatives}` templates, `src/qc/paths.ts`'s `FROM_ANCHOR_QC_*` — the same
    * strings the manifest declares). `{}` when the anchor is not inside a resolvable BIDS derivatives
-   * tree; `runQcExport` falls back to `host.files.saveDialog` in that case, so the sheet still works,
-   * it just has no default folder to preload.
+   * tree; `runQcExport` asks `chooseQcFolder` (which drives `host.files.saveDialog`) in that case,
+   * so the sheet still works — it just has no default folder to preload.
    */
   let qcFound: Record<string, string | null> = {};
   let isDirty = false;
@@ -1121,9 +1125,21 @@ export function createModel(host: ModuleHost): SeegModel {
     return typeof value === 'string' && value !== '' ? value : null;
   };
 
+  /**
+   * The stem a figure is named after outside a derivatives tree: the loaded table's own stem, so a
+   * plain folder of files still gets sensible names (`<stem>_desc-spacing_qc.svg`) rather than a
+   * `{sub}`-shaped placeholder no BIDS anchor produced.
+   */
+  const qcStem = (): string => (tsvPath === null ? '' : stemOf(baseNameOf(tsvPath)));
+
+  const qcDefaultName = (desc: string, ext: string): string => {
+    const stem = qcStem();
+    return stem === '' ? `${desc}_qc.${ext}` : `${stem}_desc-${desc}_qc.${ext}`;
+  };
+
   const doExportSpacing = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const svgPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? 'spacing_qc.svg')}` : qcTemplate(FROM_ANCHOR_QC_SPACING_SVG);
-    const tsvOutPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) ?? 'spacing_qc.tsv')}` : qcTemplate(FROM_ANCHOR_QC_SPACING_TSV);
+    const svgPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? qcDefaultName('spacing', 'svg'))}` : qcTemplate(FROM_ANCHOR_QC_SPACING_SVG);
+    const tsvOutPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) ?? qcDefaultName('spacing', 'tsv'))}` : qcTemplate(FROM_ANCHOR_QC_SPACING_TSV);
     if (svgPath === null || tsvOutPath === null) return 'no-derivatives';
     try {
       const descPath = qcTemplate(DATASET_DESCRIPTION_TEMPLATE);
@@ -1144,7 +1160,7 @@ export function createModel(host: ModuleHost): SeegModel {
    * headers for exactly what a running host would still need to verify.
    */
   const doExportReslicePng = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) ?? 'reslice_qc.png')}` : qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG);
+    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) ?? qcDefaultName('reslice', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG);
     if (pngPath === null) return 'no-derivatives';
     if (typeof OffscreenCanvas === 'undefined' || datasetId === null) return 'no-canvas';
     try {
@@ -1178,7 +1194,7 @@ export function createModel(host: ModuleHost): SeegModel {
    * real host, hence the `no-canvas` guard shared with the reslice export.
    */
   const doExportImplant3dPng = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? 'implant3d_qc.png')}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
+    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? qcDefaultName('implant3d', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
     if (pngPath === null) return 'no-derivatives';
     if (typeof OffscreenCanvas === 'undefined') return 'no-canvas';
     try {
@@ -1213,22 +1229,55 @@ export function createModel(host: ModuleHost): SeegModel {
     }
   };
 
+  /** The QC sheet's Save as… override: a folder, through `host.files.saveDialog`. */
+  const chooseQcFolder = async (): Promise<string | null> => {
+    const defaultName = qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? qcDefaultName('spacing', 'svg');
+    const target = await host.files.saveDialog('qc-spacing-svg', defaultName);
+    if (target === null) return null;
+    const slash = Math.max(target.path.lastIndexOf('/'), target.path.lastIndexOf('\\'));
+    return slash === -1 ? null : target.path.slice(0, slash);
+  };
+
   const runQcExport = async (opts: {
     spacing: boolean;
     reslice: boolean;
     implant3d: boolean;
     outputFolder?: string;
   }): Promise<Record<string, QcOutcome>> => {
+    let folderOverride = opts.outputFolder ?? null;
+    if (folderOverride === null) {
+      // Any requested figure whose default path is unresolvable (the anchor is not inside a
+      // resolvable BIDS derivatives tree) means the sheet has nowhere to put it. Ask once, up
+      // front, rather than per figure, and use the chosen folder for all of them — a user should
+      // not be asked three times for what is obviously one answer.
+      const needsFolder =
+        (opts.spacing &&
+          (qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) === null ||
+            qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) === null)) ||
+        (opts.reslice && qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) === null) ||
+        (opts.implant3d && qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) === null);
+      if (needsFolder) {
+        const chosen = await chooseQcFolder();
+        if (chosen === null) {
+          host.ui.toast('warn', 'QC export cancelled — no output folder.');
+          return {};
+        }
+        folderOverride = chosen;
+      }
+    }
     const results: Record<string, QcOutcome> = {};
-    if (opts.spacing) results['spacing'] = await doExportSpacing(opts.outputFolder ?? null);
-    if (opts.reslice) results['reslice'] = await doExportReslicePng(opts.outputFolder ?? null);
-    if (opts.implant3d) results['implant3d'] = await doExportImplant3dPng(opts.outputFolder ?? null);
+    if (opts.spacing) results['spacing'] = await doExportSpacing(folderOverride);
+    if (opts.reslice) results['reslice'] = await doExportReslicePng(folderOverride);
+    if (opts.implant3d) results['implant3d'] = await doExportImplant3dPng(folderOverride);
     const ok = Object.values(results).filter((r) => r === 'ok').length;
     const total = Object.keys(results).length;
     if (total > 0) {
+      const noDerivatives = Object.values(results).some((r) => r === 'no-derivatives');
       host.ui.toast(
         ok === total ? 'info' : 'warn',
-        `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written.`
+        noDerivatives
+          ? `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written — no derivatives tree found for the anchor.`
+          : `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written.`
       );
     }
     return results;
@@ -1938,13 +1987,7 @@ export function createModel(host: ModuleHost): SeegModel {
       return runQcExport(opts);
     },
 
-    async chooseQcFolder() {
-      const defaultName = qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? 'qc.svg';
-      const target = await host.files.saveDialog('qc-spacing-svg', defaultName);
-      if (target === null) return null;
-      const slash = Math.max(target.path.lastIndexOf('/'), target.path.lastIndexOf('\\'));
-      return slash === -1 ? null : target.path.slice(0, slash);
-    },
+    chooseQcFolder,
   };
 }
 

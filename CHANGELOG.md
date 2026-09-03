@@ -29,6 +29,17 @@
   `capture.screenshot`, and `{derivatives}` manifest sibling templates). Pinned as
   `vendor/tetravox-module-sdk-1-0.3.4-pr18.tgz`; this moves to the official
   `1.0.0-core.0.3.5` tarball once Tetravox cuts that release.
+- **Fix: QC export no longer silently writes nothing outside a derivatives tree.** A table opened
+  from a plain folder — not inside a resolvable BIDS derivatives tree, and with no `Save as…`
+  override already chosen — made every requested figure report `'no-derivatives'`, so the sheet
+  toasted "QC export: 0/3 figures written" with no way to fix it from there. `runQcExport` now asks
+  the same `Save as…` folder chooser once, up front, whenever any requested figure has no default
+  path, and writes all of them into the chosen folder; cancelling the chooser writes nothing and
+  toasts "QC export cancelled — no output folder." instead of a silent 0/N. Filenames outside BIDS
+  are now built from the loaded table's own stem (`<stem>_desc-spacing_qc.svg`, `..._qc.tsv`,
+  `..._desc-reslice_qc.png`, `..._desc-implant3d_qc.png`) instead of a fixed `spacing_qc.svg`-style
+  name; `derivatives/tetravox/dataset_description.json` is still written only inside an actual
+  derivatives tree.
 
 ## 0.1.6 — 2026-09-02
 
