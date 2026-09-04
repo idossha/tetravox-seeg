@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.2.1',
+  version: '0.2.2',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -147,11 +147,17 @@ export const seegManifest: ModuleManifest = {
      */
     {
       id: 'qc-figures',
-      title: 'Save QC figures (PDF)',
+      title: 'Save QC figures (PDF + PNG)',
       filters: [{ name: 'PDF figure', extensions: ['pdf'] }],
       siblings: [
         'sub-{id}_desc-implant3d_qc.pdf',
         '{stem}-implant3d.pdf',
+        // 0.2.2: seegprep ships each QC figure as a PNG, so the export writes the same pixels under
+        // the same name beside the PDF -- one Save sheet still admits every one of them.
+        'sub-{id}_desc-reslice_qc.png',
+        '{stem}.png',
+        'sub-{id}_desc-implant3d_qc.png',
+        '{stem}-implant3d.png',
         '{name}.{stamp}.bak',
         '{derivatives}/tetravox/dataset_description.json',
       ],

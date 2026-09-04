@@ -1,12 +1,19 @@
 /**
- * The per-electrode reslice plane — `sub-{id}_desc-reslice_qc.png` — mirroring seegprep's
- * `electrode_reslice` (`reports/figures.py`): the plane containing the fitted shaft axis and the
- * in-plane perpendicular from `cross(axis, +z)`, sampled on a regular grid.
+ * The per-electrode reslice plane's **geometry** — the half a synthetic straight lead can check
+ * exactly. `qc/export.ts` is the half that samples the volumes and paints the figure.
  *
- * This file is the **geometry only** — the plane basis, the sample grid, and where a contact ring
- * and its distance label land in that plane — because that half is what a synthetic straight lead
- * can check exactly. `qc/export.ts` is the half that calls `host.scene.sampleVolume` and composites
- * an `OffscreenCanvas`, which has no meaningful synthetic-fixture check outside a running host.
+ * Every number here is seegprep's, from `reports/figures.py::electrode_reslice`:
+ *
+ *  * the plane basis — the PCA axis `u` and `v = cross(u, +z)` normalised;
+ *  * `margin_mm = 12`, `width_mm = 22`, `res_mm = 0.4`;
+ *  * the sample grid `su = arange(-length/2 - margin, length/2 + margin, res)` and
+ *    `sv = arange(-width/2, width/2, res)`, where `length` is the **tip-to-tail** distance
+ *    `|pts[-1] - pts[0]|` — not a fixed span. A 5-contact depth electrode and a 15-contact one
+ *    therefore get panels of different data extents, which is what the reference figure shows.
+ *
+ * `numpy.arange` is half-open and counts by `ceil((stop - start) / step)`, so the count is computed
+ * that way rather than by rounding a span: a grid one column wider than seegprep's would shift the
+ * whole extent.
  */
 
 import { contacts } from '@tetravox/module-sdk';
@@ -14,17 +21,19 @@ import type { vec3 } from '@tetravox/module-sdk';
 
 const { fitLine, distanceMm } = contacts;
 
-/** Grid spacing and margins, seegprep's own (`reports/figures.py::electrode_reslice`). */
-export const GRID_SPACING_MM = 0.4;
-export const MARGIN_ALONG_MM = 12;
-export const MARGIN_ACROSS_MM = 11;
+/** `res_mm` — the reslice sample spacing (`electrode_reslice`). */
+export const RES_MM = 0.4;
+/** `margin_mm` — how far past each end of the lead the plane is sampled. */
+export const MARGIN_MM = 12;
+/** `width_mm` — the full perpendicular extent of the plane. */
+export const WIDTH_MM = 22;
 
 export interface PlaneBasis {
-  /** A point on the plane — the electrode's centroid. */
+  /** A point on the plane — the electrode's centroid, seegprep's `pts.mean(0)`. */
   origin: vec3;
-  /** Unit vector along the fitted shaft axis. */
+  /** Unit vector along the fitted shaft axis (`u`). */
   along: vec3;
-  /** Unit vector in-plane, perpendicular to `along`. */
+  /** Unit vector in-plane, perpendicular to `along` (`v = cross(u, +z)` normalised). */
   across: vec3;
 }
 
@@ -42,12 +51,25 @@ function cross(a: vec3, b: vec3): vec3 {
  * The plane containing the fitted shaft axis and `cross(axis, +z)`.
  *
  * Degenerate only for an axis exactly parallel to +z (`cross` is the zero vector), which a real
- * shaft never is; the fallback is `cross(axis, +x)`, kept so the function stays total.
+ * shaft never is; the fallback is `cross(axis, +x)`, kept so the function stays total. seegprep
+ * divides by `norm + 1e-9` and would emit a zero vector there instead — a blank panel rather than a
+ * wrong one, and a blank panel is the worse answer.
  */
 export function planeBasisFor(positions: readonly vec3[]): PlaneBasis | null {
   const fit = fitLine(positions);
   if (fit === null) return null;
-  const along = fit.axis;
+  // Orient the axis so the **tip** (the first contact) is at negative `along`, i.e. on the left of
+  // the panel. An SVD's singular vector has an arbitrary sign, so without this the panel is mirrored
+  // for about half the leads — and seegprep's own reference figure has the tip on the left in every
+  // one of its twelve panels, so pinning the sign is what makes the two figures overlay.
+  const first = positions[0] as vec3;
+  const last = positions[positions.length - 1] as vec3;
+  const forward =
+    (last[0] - first[0]) * fit.axis[0] +
+    (last[1] - first[1]) * fit.axis[1] +
+    (last[2] - first[2]) * fit.axis[2];
+  const along: vec3 =
+    forward < 0 ? [-fit.axis[0], -fit.axis[1], -fit.axis[2]] : fit.axis;
   let across = normalize(cross(along, [0, 0, 1]));
   if (across[0] === 0 && across[1] === 0 && across[2] === 0) {
     across = normalize(cross(along, [1, 0, 0]));
@@ -55,98 +77,112 @@ export function planeBasisFor(positions: readonly vec3[]): PlaneBasis | null {
   return { origin: fit.centroid, along, across };
 }
 
+/** `numpy.arange(start, stop, step)` — half-open, and counted the way numpy counts it. */
+export function arange(start: number, stop: number, step: number): number[] {
+  const n = Math.max(0, Math.ceil((stop - start) / step));
+  const out: number[] = new Array(n);
+  for (let i = 0; i < n; i += 1) out[i] = start + i * step;
+  return out;
+}
+
 export interface ResliceGrid {
-  /** World-space xyz triples, row-major, `nAlong * nAcross` points. */
+  /** World-space xyz triples, `nAlong * nAcross` points, ordered `(along, across)` row-major. */
   points: Float32Array;
+  /** Sample offsets along the shaft axis, in mm — seegprep's `su`. */
+  su: number[];
+  /** Sample offsets perpendicular to it, in mm — seegprep's `sv`. */
+  sv: number[];
   nAlong: number;
   nAcross: number;
   spacingMm: number;
 }
 
-/** The sample grid for one electrode's reslice plane. */
+/**
+ * The sample grid for one electrode's reslice plane.
+ *
+ * `positions` is needed as well as the basis because the along-extent depends on the lead's own
+ * tip-to-tail length; the basis alone could only produce a fixed-size plane.
+ */
 export function resliceGrid(
   basis: PlaneBasis,
-  opts: {
-    spacingMm?: number;
-    marginAlongMm?: number;
-    marginAcrossMm?: number;
-  } = {}
+  positions: readonly vec3[],
+  opts: { spacingMm?: number; marginMm?: number; widthMm?: number } = {}
 ): ResliceGrid {
-  const spacing = opts.spacingMm ?? GRID_SPACING_MM;
-  const marginAlong = opts.marginAlongMm ?? MARGIN_ALONG_MM;
-  const marginAcross = opts.marginAcrossMm ?? MARGIN_ACROSS_MM;
-  const nAlong = Math.round((2 * marginAlong) / spacing) + 1;
-  const nAcross = Math.round((2 * marginAcross) / spacing) + 1;
-  const points = new Float32Array(nAlong * nAcross * 3);
+  const step = opts.spacingMm ?? RES_MM;
+  const margin = opts.marginMm ?? MARGIN_MM;
+  const width = opts.widthMm ?? WIDTH_MM;
+  const first = positions[0] ?? ([0, 0, 0] as vec3);
+  const last = positions[positions.length - 1] ?? first;
+  const length = distanceMm(first, last);
+  const su = arange(-length / 2 - margin, length / 2 + margin, step);
+  const sv = arange(-width / 2, width / 2, step);
+  const points = new Float32Array(su.length * sv.length * 3);
   let k = 0;
-  for (let i = 0; i < nAlong; i++) {
-    const t = -marginAlong + i * spacing;
-    for (let j = 0; j < nAcross; j++) {
-      const s = -marginAcross + j * spacing;
+  for (const t of su) {
+    for (const s of sv) {
       points[k++] = basis.origin[0] + t * basis.along[0] + s * basis.across[0];
       points[k++] = basis.origin[1] + t * basis.along[1] + s * basis.across[1];
       points[k++] = basis.origin[2] + t * basis.along[2] + s * basis.across[2];
     }
   }
-  return { points, nAlong, nAcross, spacingMm: spacing };
+  return { points, su, sv, nAlong: su.length, nAcross: sv.length, spacingMm: step };
 }
 
-/** Where `worldPoint` lands in the reslice plane's own (along, across) millimetre coordinates. */
-export function projectToPlane(worldPoint: vec3, basis: PlaneBasis): { along: number; across: number } {
+/** Where `worldPoint` lands in the plane's own `(u, v)` millimetre coordinates — seegprep's `duv`. */
+export function projectToPlane(
+  worldPoint: vec3,
+  basis: PlaneBasis
+): { along: number; across: number } {
   const d: vec3 = [
     worldPoint[0] - basis.origin[0],
     worldPoint[1] - basis.origin[1],
     worldPoint[2] - basis.origin[2],
   ];
-  const along = d[0] * basis.along[0] + d[1] * basis.along[1] + d[2] * basis.along[2];
-  const across = d[0] * basis.across[0] + d[1] * basis.across[1] + d[2] * basis.across[2];
-  return { along, across };
-}
-
-/** Plane (along, across) millimetres to pixel coordinates in a grid of `grid`'s shape. */
-export function planeToPixel(
-  coord: { along: number; across: number },
-  grid: Pick<ResliceGrid, 'nAlong' | 'nAcross' | 'spacingMm'>,
-  marginAlongMm = MARGIN_ALONG_MM,
-  marginAcrossMm = MARGIN_ACROSS_MM
-): { x: number; y: number } {
   return {
-    x: (coord.across + marginAcrossMm) / grid.spacingMm,
-    y: (coord.along + marginAlongMm) / grid.spacingMm,
+    along: d[0] * basis.along[0] + d[1] * basis.along[1] + d[2] * basis.along[2],
+    across: d[0] * basis.across[0] + d[1] * basis.across[1] + d[2] * basis.across[2],
   };
 }
 
 export interface ContactMark {
   name: string;
   ordinal: number;
-  pixel: { x: number; y: number };
+  /** Data coordinates in the panel: x = along the shaft (mm), y = perpendicular (mm). */
+  mm: { along: number; across: number };
 }
 
 export interface DistanceLabel {
-  /** Midpoint between the two contacts, in pixel space. */
-  pixel: { x: number; y: number };
+  /** The midpoint of the two rings, in the same data coordinates — `(duv[i] + duv[i+1]) / 2`. */
+  mm: { along: number; across: number };
+  /** The **3-D** centre-to-centre distance, never the in-plane separation. See below. */
   distanceMm: number;
 }
 
-/** Ring/label positions for an ordered electrode, plus the 3-D distance labels between neighbours. */
+/**
+ * Ring positions for an ordered electrode, plus the 3-D distance between consecutive contacts.
+ *
+ * The distance is the true world-space one (`contacts.distanceMm`), matching seegprep's
+ * `np.linalg.norm(np.diff(pts, axis=0))`: the in-plane `duv` separation would understate a gap for
+ * any lead not perfectly flat in its own reslice plane, and the number a reader quotes has to be the
+ * real one.
+ */
 export function resliceMarks(
   ordered: Array<{ name: string; ordinal: number; position: vec3 }>,
-  basis: PlaneBasis,
-  grid: ResliceGrid
+  basis: PlaneBasis
 ): { marks: ContactMark[]; labels: DistanceLabel[] } {
   const marks: ContactMark[] = ordered.map((c) => ({
     name: c.name,
     ordinal: c.ordinal,
-    pixel: planeToPixel(projectToPlane(c.position, basis), grid),
+    mm: projectToPlane(c.position, basis),
   }));
   const labels: DistanceLabel[] = [];
-  for (let i = 1; i < ordered.length; i++) {
+  for (let i = 1; i < ordered.length; i += 1) {
     const a = ordered[i - 1]!;
     const b = ordered[i]!;
-    const pa = marks[i - 1]!.pixel;
-    const pb = marks[i]!.pixel;
+    const pa = marks[i - 1]!.mm;
+    const pb = marks[i]!.mm;
     labels.push({
-      pixel: { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 },
+      mm: { along: (pa.along + pb.along) / 2, across: (pa.across + pb.across) / 2 },
       distanceMm: distanceMm(a.position, b.position),
     });
   }

@@ -277,42 +277,69 @@ table's own source path, same as before.
 
 ### QC exports
 
-The panel's **QC export** section writes two PDF reports, to
+The panel's **QC export** section writes two figures, each as a PDF *and* a PNG, to
 `derivatives/tetravox/sub-<id>/ieeg/figures/` by default:
 
-| File                               | What it shows                                                                                              |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `sub-<id>_desc-reslice_qc.pdf`     | One page per electrode: its shaft-axis plane, T1 in grey with a CT bone overlay, with the 3-D gap distances printed above it |
-| `sub-<id>_desc-implant3d_qc.pdf`   | One page: four angles (superior, left, right, anterior) tiled 2×2, with a colour legend                     |
+| File                             | What it shows                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `sub-<id>_desc-reslice_qc.pdf`   | One page holding the whole small-multiples grid: three panels across, one oblique reslice per electrode              |
+| `sub-<id>_desc-reslice_qc.png`   | The same pixels, under seegprep's own filename                                                                        |
+| `sub-<id>_desc-implant3d_qc.pdf` | One page: the glass-brain implant overview, four views (superior, left, right, anterior) tiled 2×2 with a legend      |
+| `sub-<id>_desc-implant3d_qc.png` | The same pixels, under seegprep's own filename                                                                        |
 
 A `derivatives/tetravox/dataset_description.json` marks the folder as a BIDS derivative, written once
 if it is not already there.
 
+**Both figures are built to match `seegprep`'s.** `seegprep`'s `reports/figures.py` —
+`electrode_reslice` and `implant_3d` — is the specification, down to the plane basis (`cross(axis, +z)`),
+`margin_mm = 12` / `width_mm = 22` / `res_mm = 0.4`, the 2nd–99th percentile T1 window, the 1200–3000 HU
+`autumn` overlay at `alpha = 0.85`, the `6.2 × 3.0` inch panels at 150 dpi, the lime tip square, the
+`_IMPLANT_PALETTE` colours, the 0.45 mm tubes and 1.3 mm contact spheres, the `zoom = 1.4` camera and the
+suptitle wording. Two things differ, both on purpose:
+
+1. **the contact rings are the electrode's own colour** (the colour it has in the app), not seegprep's
+   single cyan; and
+2. **the 3-D centre-to-centre distance between neighbouring contacts** is printed between their rings, in
+   the same colour — the real distance in the head, not the in-plane one the picture would suggest for a
+   lead leaning out of its own reslice plane.
+
+`src/qc/mpl.ts` is the matplotlib stand-in that makes this possible inside a bundle that may import
+nothing: the `gray` and `autumn` LUTs, points-to-pixels at the style sheet's dpi, axes with `origin="lower"`
+and `aspect="equal"`, spines and ticks, the suptitle, and `savefig(bbox="tight")` (measured on the rendered
+pixels). What it does *not* reproduce is matplotlib's `tight_layout` solver — panels are placed with padding
+derived from the same font sizes, so panel positions can differ from a matplotlib render by a few pixels.
+
+Measured against seegprep's own `sub-P076` figures (12 leads, 106 contacts, same CT and SimNIBS T1): the
+reslice figure comes out 2676 x 1825 px against seegprep's 2406 x 1541, with the same panel order, the same
+per-panel data extents, the same tick values and the same warm-overlay coverage (36 080 sampled CT pixels
+against 36 036). The implant figure's brain renders at median grey 203 against seegprep's 205, spanning 57%
+of a panel's width against 60%.
+
+**The 3-D implant figure is rendered, not screenshotted** (0.2.2). Through 0.2.1 it drove the app's own 3-D
+view through four camera presets and captured each — which showed the app rather than a glass brain, and
+left your camera at the superior preset. It is now drawn from the contacts plus a coarse brain mask sampled
+out of the open T1 (or the SimNIBS tissue map, when one is loaded, using seegprep's `brain_labels = (1, 2)`;
+without labels, an Otsu cut on the T1). **Your 3-D view is not touched.** The renderer is a splat-and-depth
+stand-in for VTK's marching cubes and three-light shading, so the silhouette is the mask's and has no gyral
+detail; if no volume is open the leads are still drawn and a toast says the brain is missing.
+
 **A Save sheet opens the first time you export**, pre-filled with that default path — press Save and
 the figures land exactly there. Tetravox lets an extension write only where you have named a file, so
 there is no way to skip it; it is asked once per table, and _Export to…_ asks again if you want the
-figures somewhere else. Choosing any folder works: the 3-D figure is written beside the reslice one.
+figures somewhere else. Choosing any folder works: the 3-D figure and both PNGs are written beside the
+reslice one.
 
 **If a figure cannot be written, the panel says why** — the missing CT, the electrode with too few
 contacts, or whatever the app itself refused with. (Through 0.2.0 it said `error`, which was not
 enough to act on.)
 
-**The 3-D implant figure rotates the camera through four RAS presets** — superior, left, right,
-anterior, in that order, via `host.capture.setView` (Tetravox PR #18) — and screenshots each one.
-There is no camera-restore API, so once the four shots are in hand the module sets the view back to
-`superior` and leaves it there; your 3-D view will be at the superior preset after an export, not
-wherever it was before. On a host built before PR #18 (no `capture.setView`), the export falls back
-to a single capture of whatever the 3-D view already shows and shows a toast noting only the current
-view was captured — `src/qc/implant3d.ts`'s `captureImplant3dViews` owns this behaviour and its
-degraded-host fallback.
-
 **Outside a BIDS derivatives tree** there is no `{sub}`-shaped default to offer, so the Save sheet is
 pre-filled with a name built from the loaded table's own stem instead — `<stem>_desc-reslice_qc.pdf`
 — and `dataset_description.json` is written only when a real derivatives tree was found.
 
-The PDFs are written by `src/qc/pdf.ts`, about 150 lines: the figures are JPEGs passed through as
-`/DCTDecode` image XObjects with base-14 Helvetica captions and no embedded font, because the module
-bundle carries no dependencies at all.
+The PDFs are written by `src/qc/pdf.ts`, about 150 lines: each figure is a JPEG passed through as a
+`/DCTDecode` image XObject with no embedded font, because the module bundle carries no dependencies at
+all. The PNG is the same canvas encoded the other way.
 
 ### Scenes, and a build without the module
 
