@@ -124,7 +124,6 @@ operations (`ghost`, `wire`, `size`) — which of them are on is part of what a 
 | walk the electrode        | `n` / `p`, or the list — the crosshair follows, so every pane slices through the contact |
 | snap to the metal         | `s` for the selected contact, `⇧S` for the whole electrode, **Snap all…** for every one  |
 | add the missing contacts  | **Extend**, when the model says the shaft has more than the table does                   |
-| re-fit the shaft          | `f`                                                                                      |
 | renumber from the tip     | **Renumber tip-first**                                                                   |
 | flip which end is the tip | `t`                                                                                      |
 | delete                    | `Delete` or `⌫`                                                                          |
@@ -188,16 +187,16 @@ undo step, and none of them renumbers.
 
 `seegprep`'s catalogue knows forty-four depth-electrode models, and knowing which one a shaft is
 changes what "correct" means for it. An Ad-Tech Behnke-Fried lead is **3.0 mm** between contacts 1
-and 2 and **5.5 mm** from there out; Re-fit, which re-spaces at the shaft's own *median* gap, turns
-that into a uniform 5.5 mm and leaves contact 2 two and a half millimetres off the metal it is
-inside. So the panel has a model section, and it looks in three places in this order:
+and 2 and **5.5 mm** from there out; a snap that re-spaces at the shaft's own *median* gap turns that
+into a uniform 5.5 mm and leaves contact 2 two and a half millimetres off the metal it is inside. So
+the panel has a model section, and it looks in three places in this order:
 
 | Where                                                       | What it gives                                          |
 | ----------------------------------------------------------- | ------------------------------------------------------ |
 | `sub-<id>_electrodes-geometry.json`, where it names a model | this subject's own per-electrode gaps, from seegprep    |
 | the bundled gap table, keyed by a model or part number       | the manufacturer's geometry for that model             |
 | that sidecar's `model: "n/a"` rows                           | the shaft's **measured** median pitch, labelled as such |
-| nothing                                                      | today's behaviour: Re-fit's observed median gap        |
+| nothing                                                      | the shaft's own observed median gap                    |
 
 The third row needs saying. seegprep's sidecar always states a `spacing_gaps_mm`: when *its*
 catalogue matched nothing it writes `model: "n/a"` and fills the vector with the shaft's own median
@@ -229,16 +228,11 @@ has. They go beyond the *entry* end at the model's spacing and are then snapped,
 `status: added` like any contact placed by hand. It asks first, because it adds rows to a clinical
 table.
 
-**Re-fit shaft** fits a line through the electrode's contacts, projects them onto it, re-spaces them
-evenly at the _median_ observed gap — median, so one missing contact does not stretch the rest — and
-relabels them from the tip. It reports the line RMS and the spacing CV, which are the two numbers that
-say whether the shaft is straight and evenly spaced.
-
 **Numbering only ever changes when you ask.** Loading, placing, dragging, snapping and deleting all leave
 every contact's number and name exactly as they were — a clinical table's numbering is wired to the
 recording system through its `csc` column, and nothing should renumber it behind your back. Only
-_Re-fit_ and _Renumber tip-first_ relabel, and both say so on the button. New names keep the zero-padding
-the file used (`LINS01`, not `LINS1`).
+_Renumber tip-first_ relabels, and it says so on the button. New names keep the zero-padding the file
+used (`LINS01`, not `LINS1`).
 
 **Which end is the tip** is a heuristic, and the panel shows the answer: _contact 1 is the end of the
 shaft nearer the centre of the volume_, and the other end is the entry. That is right for nearly every
@@ -257,8 +251,8 @@ things happen, in this order:
    `edited` (moved by more than 0.001 mm) or `added`; a row that has not moved keeps whatever status the
    localiser gave it, so `located` and `gapfilled` survive;
 3. `<stem>_editlog.json` is written beside it ([what is in it](docs/EDITLOG.md)), recording what changed — counts, and one entry per
-   contact added, moved, **renamed** or deleted, with where it was and where it is now. Renumber and
-   Re-fit relabel contacts that may not have moved at all, and those entries carry the name the table
+   contact added, moved, **renamed** or deleted, with where it was and where it is now. Renumber
+   relabels contacts that may not have moved at all, and those entries carry the name the table
    had (`renamed_from`) beside the name it has now: relabelling is the one edit that changes how the
    `csc` column maps onto your recording system, so an editlog silent about it would be lying.
 
@@ -283,18 +277,25 @@ table's own source path, same as before.
 
 ### QC exports
 
-The panel's **QC export** section writes three figures plus a spacing table, to
-`derivatives/tetravox/sub-<id>/ieeg/figures/` by default (a `Save as…` there redirects any one of them):
+The panel's **QC export** section writes two PDF reports, to
+`derivatives/tetravox/sub-<id>/ieeg/figures/` by default:
 
-| File                                          | What it shows                                                        |
-| ---------------------------------------------- | --------------------------------------------------------------------- |
-| `sub-<id>_desc-spacing_qc.svg`                | A histogram of consecutive-contact 3-D distances, with one dashed line per electrode model's nominal pitch |
-| `sub-<id>_desc-spacing_qc.tsv`                | The distances behind the histogram: `electrode`, `contact_a`, `contact_b`, `distance_mm` |
-| `sub-<id>_desc-reslice_qc.png`                | Every electrode's shaft-axis plane, T1 in grey with a CT bone overlay, tiled 3 to a row |
-| `sub-<id>_desc-implant3d_qc.png`              | Four angles (superior, left, right, anterior) tiled 2×2, with a colour legend |
+| File                               | What it shows                                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sub-<id>_desc-reslice_qc.pdf`     | One page per electrode: its shaft-axis plane, T1 in grey with a CT bone overlay, with the 3-D gap distances printed above it |
+| `sub-<id>_desc-implant3d_qc.pdf`   | One page: four angles (superior, left, right, anterior) tiled 2×2, with a colour legend                     |
 
 A `derivatives/tetravox/dataset_description.json` marks the folder as a BIDS derivative, written once
 if it is not already there.
+
+**A Save sheet opens the first time you export**, pre-filled with that default path — press Save and
+the figures land exactly there. Tetravox lets an extension write only where you have named a file, so
+there is no way to skip it; it is asked once per table, and _Export to…_ asks again if you want the
+figures somewhere else. Choosing any folder works: the 3-D figure is written beside the reslice one.
+
+**If a figure cannot be written, the panel says why** — the missing CT, the electrode with too few
+contacts, or whatever the app itself refused with. (Through 0.2.0 it said `error`, which was not
+enough to act on.)
 
 **The 3-D implant figure rotates the camera through four RAS presets** — superior, left, right,
 anterior, in that order, via `host.capture.setView` (Tetravox PR #18) — and screenshots each one.
@@ -305,12 +306,13 @@ to a single capture of whatever the 3-D view already shows and shows a toast not
 view was captured — `src/qc/implant3d.ts`'s `captureImplant3dViews` owns this behaviour and its
 degraded-host fallback.
 
-**Outside a BIDS derivatives tree**, there is no `{sub}`-shaped default folder to write into. QC
-export asks for one — the same `Save as…` folder chooser — the first time it needs it, and then
-writes every figure you asked for into that folder; cancelling the chooser writes nothing. Filenames
-in that case are built from the loaded table's own stem instead of `sub-<id>`, e.g.
-`<stem>_desc-spacing_qc.svg`, and `dataset_description.json` is written only when a real derivatives
-tree was found.
+**Outside a BIDS derivatives tree** there is no `{sub}`-shaped default to offer, so the Save sheet is
+pre-filled with a name built from the loaded table's own stem instead — `<stem>_desc-reslice_qc.pdf`
+— and `dataset_description.json` is written only when a real derivatives tree was found.
+
+The PDFs are written by `src/qc/pdf.ts`, about 150 lines: the figures are JPEGs passed through as
+`/DCTDecode` image XObjects with base-14 Helvetica captions and no embedded font, because the module
+bundle carries no dependencies at all.
 
 ### Scenes, and a build without the module
 
@@ -324,8 +326,9 @@ writing a table in which everything looks new.
 ### From a job file
 
 Every button is also a job-file operation, so a batch can do what the panel does — `load`, `snap`,
-`extend`, `refit`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`,
-`stats` and `save`. `snap` reports, per electrode, which mode ran (`axis` or `axis-model`) and the
+`extend`, `renumber`, `flip-tip`, `revert`, `delete`, `ghost`, `wire`, `size`, `stats`, `save` and
+`export-qc`. `export-qc`'s `out` names the reslice PDF under `--out`; the 3-D figure is written beside
+it, and the operation answers with a reason per figure rather than a status word. `snap` reports, per electrode, which mode ran (`axis` or `axis-model`) and the
 model it used, so a batch learns what it got. `flip-tip` matters more
 than it looks: which end of a shaft is contact 1 comes from a heuristic, `renumber` applies whatever the
 tip currently is, and this is how a batch corrects the shaft the heuristic read backwards — the same thing
@@ -424,9 +427,10 @@ src/
   editor.ts     the state and every command; every command is also a job operation
   Panel.tsx     chrome: reads the model through useSyncExternalStore, one call per control
   block.ts      the module's own record inside a scene file
-  shaft.ts      depth-electrode geometry — the tip rule, re-fit, renumber
+  shaft.ts      depth-electrode geometry — the tip rule, renumber, per-shaft stats
   modelsnap.ts  which electrode this *is* — model resolution, the axis snap, the template slide, extend
   catalogue.gen.ts  GENERATED: the gap table, from seegprep's electrode_models.json
+  qc/pdf.ts     a minimal PDF writer — JPEG XObjects and base-14 Helvetica, no dependency
   bids.ts       the seegprep derivative layout
 test/           vitest; test/setup.ts is the app's half of the SDK global
 scripts/        build, validate, fetch, release

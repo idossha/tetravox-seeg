@@ -90,7 +90,9 @@ sits on.
 ### Scope
 
 Both fields are **per table, not per window**, like the `refit` / `renumbered` / `snapped` flags
-beside them. Anatomical naming means sub-02's shafts are usually called what sub-01's were, so
+beside them. (`refit` is **always `false`** since 0.2.1: the Re-fit button was removed, and the flag
+is kept so a reader looking it up by name — `seegprep`'s does — is not broken by a button going
+away.) Anatomical naming means sub-02's shafts are usually called what sub-01's were, so
 opening another table forgets every one of them; otherwise a snap-to-model on one subject would write
 `snap_mode: "model"` beside a same-named electrode of a table it never ran on.
 

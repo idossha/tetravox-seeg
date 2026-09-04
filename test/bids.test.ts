@@ -32,10 +32,8 @@ import {
   subjectOf,
 } from '../src/bids';
 import {
-  FROM_ANCHOR_QC_IMPLANT3D_PNG,
-  FROM_ANCHOR_QC_RESLICE_PNG,
-  FROM_ANCHOR_QC_SPACING_SVG,
-  FROM_ANCHOR_QC_SPACING_TSV,
+  FROM_ANCHOR_QC_IMPLANT3D_PDF,
+  FROM_ANCHOR_QC_RESLICE_PDF,
   DATASET_DESCRIPTION_TEMPLATE,
 } from '../src/qc/paths';
 
@@ -123,10 +121,8 @@ describe('the manifest and the module agree about the BIDS layout', () => {
     const qcCandidates = [
       FROM_TSV_DERIVATIVES_CORRECTED,
       FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG,
-      FROM_ANCHOR_QC_SPACING_SVG,
-      FROM_ANCHOR_QC_SPACING_TSV,
-      FROM_ANCHOR_QC_RESLICE_PNG,
-      FROM_ANCHOR_QC_IMPLANT3D_PNG,
+      FROM_ANCHOR_QC_RESLICE_PDF,
+      FROM_ANCHOR_QC_IMPLANT3D_PDF,
       DATASET_DESCRIPTION_TEMPLATE,
     ];
     expect(fromCt?.candidates).toEqual([

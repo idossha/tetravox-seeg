@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.1 — Unreleased
+
+Still requires Tetravox 0.3.5 or newer, and the PDF exports need the Tetravox release that accepts a
+`.pdf` from an extension (Tetravox PR: "an extension may write a .pdf figure").
+
+- **QC export worked again, and now says why when it does not.** On the released 0.2.0 every figure
+  came back `error` — all three of them, with nothing else to go on. The export was writing to the
+  `derivatives/tetravox/…/figures/` paths it had *found* beside your table, and Tetravox only lets an
+  extension write where you have actually named a file in a Save sheet, so every write was refused
+  and the panel had no way to show you the refusal. Exporting now opens one Save sheet, pre-filled
+  with that same default path, so pressing Save puts the figures exactly where they were always meant
+  to go; it asks once per table, and **Export to…** asks again if you want them elsewhere. When a
+  figure still cannot be written the panel prints the actual reason — the missing CT, the electrode
+  with too few contacts, or the app's own refusal text — instead of the word `error`.
+
+- **The QC figures are PDFs.** `sub-<id>_desc-reslice_qc.pdf` is one page per electrode: its
+  shaft-axis plane with the 3-D gap distances printed above it, instead of every electrode crammed
+  three-to-a-row into one PNG. `sub-<id>_desc-implant3d_qc.pdf` is the four 3-D views and the legend
+  on one page. Both are documents you can print or drop into a report.
+
+- **The spacing histogram is gone**, SVG and TSV both. The per-gap table in the panel is what people
+  actually read — it is beside the contacts, it updates as you edit, and it says which gaps are out
+  of tolerance — and the exported histogram was a second, staler copy of the same numbers.
+
+- **Re-fit is gone.** It re-spaced a shaft evenly at its own median gap, which for any electrode with
+  a real datasheet is the wrong answer: an Ad-Tech Behnke-Fried lead is 3.0 mm between contacts 1 and
+  2 and 5.5 mm after that, and Re-fit flattened that to a uniform 5.5 mm. Snap already fits the axis
+  and uses the manufacturer's own gaps, so the button was a worse version of what is beside it — and
+  it silently renumbered while doing it. `f` is free again. Renumber, Flip tip, Ghost, Wire and
+  Revert are unchanged. The editlog still carries its `refit` flag, now always `false`, so
+  `seegprep`'s reader is unaffected.
+
+- **The QC export can be run from a job file**, as `export-qc`: `out` names the reslice PDF under
+  `--out` and the 3-D figure is written beside it, so a batch can regenerate a paper's figures.
+
 ## 0.2.0 — 2026-09-03
 
 Requires Tetravox 0.3.5 or newer: the QC exports and the axis snap use host capabilities (`scene.sampleVolume`,
@@ -85,7 +120,8 @@ Requires Tetravox 0.3.5 or newer: the QC exports and the axis snap use host capa
   through. Those make different claims about a position, and `snapped: true` alone could not tell them
   apart.
 - `extend` is a job-file operation, so a batch has it too.
-- **A QC export sheet**: the panel gained a checklist for a spacing histogram, a per-electrode
+- **A QC export sheet** (0.2.1: the spacing histogram was dropped and the other two became PDFs):
+  the panel gained a checklist for a spacing histogram, a per-electrode
   reslice figure and a 3-D implant figure, plus a `Save as…` to redirect any one of them. Exports
   land under `derivatives/tetravox/sub-<id>/ieeg/figures/` by default — `sub-<id>_desc-spacing_qc.svg`,
   `..._desc-reslice_qc.png`, `..._desc-implant3d_qc.png`, `..._desc-spacing_qc.tsv` (electrode,
