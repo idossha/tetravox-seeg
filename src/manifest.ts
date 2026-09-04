@@ -37,7 +37,7 @@ import type { ModuleManifest } from '@tetravox/module-sdk';
 export const seegManifest: ModuleManifest = {
   id: 'tetravox.seeg',
   title: 'sEEG contacts',
-  version: '0.2.0',
+  version: '0.2.1',
   hostApi: 1,
   // An external module documents itself at a URL: the app's guide has no `## sEEG contacts`
   // heading to point at once the module ships from its own repository (the manifest validator
@@ -51,7 +51,6 @@ export const seegManifest: ModuleManifest = {
     { id: 'snap-all', title: 'Snap all electrodes onto their shaft axes…' },
     { id: 'next', title: 'Next contact', key: 'n' },
     { id: 'prev', title: 'Previous contact', key: 'p' },
-    { id: 'refit', title: 'Re-fit shaft', key: 'f' },
     { id: 'extend', title: 'Extend along axis to the model’s contact count…' },
     { id: 'renumber', title: 'Renumber tip-first' },
     { id: 'flip-tip', title: 'Flip tip end', key: 't' },
@@ -96,11 +95,10 @@ export const seegManifest: ModuleManifest = {
         // derivatives rather than beside seegprep's output. `bids.ts`'s `FROM_TSV_DERIVATIVES_CORRECTED*`.
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv',
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json',
-        // The QC export sheet's default output folder (`src/qc/paths.ts`'s `FROM_ANCHOR_QC_*`).
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.svg',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.tsv',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.png',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.png',
+        // The QC export's default output folder (`src/qc/paths.ts`'s `FROM_ANCHOR_QC_*`). Finding
+        // these is what pre-fills the export's Save sheet; it is not permission to write them.
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.pdf',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.pdf',
         '{derivatives}/tetravox/dataset_description.json',
       ],
     },
@@ -113,10 +111,8 @@ export const seegManifest: ModuleManifest = {
         '{sub}_electrodes-geometry.json',
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv',
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.svg',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-spacing_qc.tsv',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.png',
-        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.png',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.pdf',
+        '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-implant3d_qc.pdf',
         '{derivatives}/tetravox/dataset_description.json',
       ],
     },
@@ -131,30 +127,34 @@ export const seegManifest: ModuleManifest = {
       siblings: ['{name}.{stamp}.bak', '{stem}_editlog.json'],
       backup: 'timestamped',
     },
-    // The QC export sheet (T1, 2026-09-03): a `Save as…` here still lets a user redirect any one
-    // figure, but the sheet's own default output folder is the `{derivatives}` template below —
-    // `src/qc/paths.ts` builds the same names this writer declares, and `test/qc/paths.test.ts` pins
-    // the pair the way `bids.test.ts` pins the load-side templates.
+    /**
+     * **The QC export's one writer** (0.2.1, replacing three).
+     *
+     * Three writers was the bug the owner hit: the export wrote to the `{derivatives}` paths
+     * `host.files.siblings` had *found* on load, and finding a name is not permission to write it —
+     * only a Save sheet admits a path (host `module-io.ts`). Every figure came back `error`.
+     *
+     * So there is one sheet and it names the **reslice** PDF; the 3-D figure and the dataset
+     * sidecar are its siblings, admitted with it. The implant template is a **plain** sibling
+     * rather than a `{derivatives}` one on purpose: a plain sibling lands beside whatever file the
+     * user chose, so redirecting the export to a scratch folder still writes both figures, where a
+     * `{derivatives}` template outside a BIDS tree resolves to nothing. `{stem}-implant3d.pdf` is
+     * the fallback for an anchor carrying no `sub-` entity — main drops a template whose tokens the
+     * anchor does not supply, and a table called `contacts.tsv` should still get its second figure.
+     *
+     * `src/qc/paths.ts` builds the same names, and `test/qc/paths.test.ts` pins the pair the way
+     * `bids.test.ts` pins the load-side templates.
+     */
     {
-      id: 'qc-spacing-svg',
-      title: 'Save spacing histogram (SVG)',
-      filters: [{ name: 'SVG figure', extensions: ['svg'] }],
+      id: 'qc-figures',
+      title: 'Save QC figures (PDF)',
+      filters: [{ name: 'PDF figure', extensions: ['pdf'] }],
       siblings: [
+        'sub-{id}_desc-implant3d_qc.pdf',
+        '{stem}-implant3d.pdf',
+        '{name}.{stamp}.bak',
         '{derivatives}/tetravox/dataset_description.json',
-        '{derivatives}/tetravox/sub-{id}/ieeg/figures/sub-{id}_desc-spacing_qc.tsv',
       ],
-    },
-    {
-      id: 'qc-reslice-png',
-      title: 'Save per-electrode reslice (PNG)',
-      filters: [{ name: 'PNG figure', extensions: ['png'] }],
-      siblings: ['{derivatives}/tetravox/dataset_description.json'],
-    },
-    {
-      id: 'qc-implant3d-png',
-      title: 'Save 3-D implant figure (PNG)',
-      filters: [{ name: 'PNG figure', extensions: ['png'] }],
-      siblings: ['{derivatives}/tetravox/dataset_description.json'],
     },
   ],
   operations: [
@@ -177,7 +177,6 @@ export const seegManifest: ModuleManifest = {
       id: 'snap',
       args: { scope: 'string', electrode: 'string?', contact: 'string?', radiusMm: 'number?' },
     },
-    { id: 'refit', args: { electrode: 'string?' } },
     // `extend` is the one operation here that *adds* contacts, so it is deliberately not folded
     // into `snap`: a batch that wanted a shaft completed has to say so.
     { id: 'extend', args: { electrode: 'string?', radiusMm: 'number?' } },
@@ -199,6 +198,15 @@ export const seegManifest: ModuleManifest = {
     { id: 'size', args: { px: 'number' } },
     { id: 'stats', args: {} },
     { id: 'save', args: { out: 'out' } },
+    /**
+     * The QC export, as an operation (0.2.1). Until now the export sheet was panel-only, which made
+     * it the module's one automation-only gap *in reverse*: a figure a paper needs could not be
+     * regenerated from a job file, and the export's failures could not be reproduced without a
+     * person clicking Export. `out` names the **reslice** PDF under `--out`; the 3-D figure is
+     * written beside it under the `qc-figures` writer's sibling name, which main admits along with
+     * every other writer's siblings when it admits an `out` (host `job.ts#moduleOutTargets`).
+     */
+    { id: 'export-qc', args: { out: 'out', reslice: 'boolean?', implant3d: 'boolean?' } },
     // Appended 2026-08-30. `tip: 'auto'` is a heuristic — DECISIONS says an occipital shaft entering
     // near the midline defeats it — and `renumber` applies whatever the tip currently is, so without
     // a way to flip it a job could number a shaft tip-last and had no remedy at all short of an
