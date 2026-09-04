@@ -8,5 +8,7 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["test/**/*.ts", "vitest.config.ts", "rollup.config.mjs"]
+  // `src/jsx.d.ts` is listed because a test that renders the panel pulls `src/Panel.tsx` into
+  // *this* project, and the classic JSX transform resolves elements through that global namespace.
+  "include": ["test/**/*.ts", "src/jsx.d.ts", "vitest.config.ts", "rollup.config.mjs"]
 }
