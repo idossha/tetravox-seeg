@@ -73,7 +73,6 @@ import type { ShaftDiagram, ShaftStats } from './shaft';
 import {
   allShaftStats,
   flippedTip,
-  refitShaft,
   renumberTipFirst,
   resolveTip,
   shaftDiagram,
@@ -96,15 +95,22 @@ import {
 } from './bids';
 import {
   DATASET_DESCRIPTION_TEMPLATE,
-  FROM_ANCHOR_QC_IMPLANT3D_PNG,
-  FROM_ANCHOR_QC_RESLICE_PNG,
-  FROM_ANCHOR_QC_SPACING_SVG,
-  FROM_ANCHOR_QC_SPACING_TSV,
+  FROM_ANCHOR_QC_RESLICE_PDF,
+  WRITER_IMPLANT3D_BIDS,
+  WRITER_IMPLANT3D_STEM,
+  implant3dBesideReslice,
 } from './qc/paths';
-import { buildResliceTiles, compositeReslice, ensureDatasetDescription } from './qc/export';
+import {
+  buildResliceTiles,
+  drawResliceOverlay,
+  ensureDatasetDescription,
+  paintResliceImage,
+  resliceCaption,
+  resliceImageSize,
+  type ResliceTile,
+} from './qc/export';
 import { captureImplant3dViews, compositeImplant3d, legendOf } from './qc/implant3d';
-import { spacingHistogramSvg } from './qc/histogram';
-import { spacingTsv } from './qc/tsv';
+import { buildPdf, type PdfPage } from './qc/pdf';
 
 const {
   CANONICAL_FIELDNAMES,
@@ -340,24 +346,26 @@ export interface SeegModel {
    */
   loadElectrodeList(): Promise<void>;
   /**
-   * The QC export sheet (T1, 2026-09-03). `opts.outputFolder`, when given, is a `Save as…`-chosen
-   * folder that overrides the `{derivatives}` default; omitted, the module uses whatever
-   * `host.files.siblings` resolved for this table (`applyDerivativesDefaultSave`'s sibling group).
-   * When the anchor is not inside a resolvable derivatives tree and no override was given,
-   * `runQcExport` asks `chooseQcFolder` once up front and uses the chosen folder for every
-   * requested figure; a cancelled chooser writes nothing and returns `{}`.
-   * `reslice` and `implant3d` additionally require `OffscreenCanvas`, which is not available
-   * outside a real host — a suite running under vitest reports `'no-canvas'` for both rather than
-   * throwing.
+   * The QC export (0.2.1): two PDFs, `sub-<id>_desc-reslice_qc.pdf` and
+   * `sub-<id>_desc-implant3d_qc.pdf`.
+   *
+   * It asks `host.files.saveDialog('qc-figures', …)` once per table, pre-filled with the
+   * `{derivatives}` path `host.files.siblings` resolved, and remembers what that sheet admitted;
+   * `chooseOutput: true` asks again. A cancelled sheet writes nothing and returns `{}`.
+   *
+   * The result is **a reason per figure**, not a status word: `ok` says whether it was written and
+   * `detail` is either what was written or exactly why it was not — the host's own refusal text
+   * where the host refused. 0.2.0 collapsed every one of those into `'error'`, which is how three
+   * failing writes reached a user as three words that said nothing.
+   *
+   * Both figures need `OffscreenCanvas`, which vitest has not: a suite running outside a real host
+   * gets that sentence as the reason rather than a throw.
    */
   exportQc(opts: {
-    spacing: boolean;
     reslice: boolean;
     implant3d: boolean;
-    outputFolder?: string;
-  }): Promise<Record<string, 'ok' | 'no-derivatives' | 'no-canvas' | 'error'>>;
-  /** The QC sheet's Save as… override: a folder, through `host.files.saveDialog`. */
-  chooseQcFolder(): Promise<string | null>;
+    chooseOutput?: boolean;
+  }): Promise<Record<string, { ok: boolean; detail: string }>>;
 }
 
 export function createModel(host: ModuleHost): SeegModel {
@@ -388,13 +396,28 @@ export function createModel(host: ModuleHost): SeegModel {
   let t1Path: string | null = null;
   let pendingTsv: string | null = null;
   /**
-   * The QC export sheet's default output paths, resolved from whichever `host.files.siblings` call
+   * The QC export's *default* output paths, resolved from whichever `host.files.siblings` call
    * loaded this table (`{derivatives}` templates, `src/qc/paths.ts`'s `FROM_ANCHOR_QC_*` — the same
    * strings the manifest declares). `{}` when the anchor is not inside a resolvable BIDS derivatives
-   * tree; `runQcExport` asks `chooseQcFolder` (which drives `host.files.saveDialog`) in that case,
-   * so the sheet still works — it just has no default folder to preload.
+   * tree, and the export then defaults to a name beside the table itself.
+   *
+   * These are what the export's Save sheet is **pre-filled** with, never what it writes to: finding
+   * a path is not permission to write it, and treating it as one is the 0.2.0 bug
+   * (`runQcExport`'s header).
    */
   let qcFound: Record<string, string | null> = {};
+  /**
+   * The paths one QC Save sheet admitted for this table: the two figures and the BIDS sidecar.
+   *
+   * Declared beside `qcFound` and not with the export code that fills it, because the resets that
+   * clear it on a new table run from `applyTable`, well above it.
+   */
+  interface QcTargets {
+    reslicePdf: string;
+    implant3dPdf: string | null;
+    datasetDescription: string | null;
+  }
+  let qcAdmitted: QcTargets | null = null;
   let isDirty = false;
   /** Whether the module wants the point tool on its layer at all. */
   let armed = false;
@@ -404,6 +427,14 @@ export function createModel(host: ModuleHost): SeegModel {
   let selfCleared = false;
   let dragBase: Snapshot | null = null;
   const operations = {
+    /**
+     * Always empty since 0.2.1 — Re-fit is gone, and this is the key that outlives it.
+     *
+     * The editlog is a contract with `seegprep`, whose reader looks the flag up by name
+     * (`docs/EDITLOG.md`); dropping the key would change the schema for a program that has no
+     * reason to care that a button was removed. So the flag is still written, and is now always
+     * `false` for every electrode.
+     */
     refit: new Set<string>(),
     renumbered: new Set<string>(),
     snapped: new Set<string>(),
@@ -829,6 +860,8 @@ export function createModel(host: ModuleHost): SeegModel {
     savePath = null;
     saveSiblings = {};
     qcFound = {};
+    // A new table is a new subject: last table's admitted figure paths are not this one's.
+    qcAdmitted = null;
     electrode = set.groups[0]?.name ?? null;
     selectedId = null;
     // Everything the *previous* table's session recorded goes with it: the per-electrode operation
@@ -1392,16 +1425,6 @@ export function createModel(host: ModuleHost): SeegModel {
     return reports;
   };
 
-  const doRefit = (group: string): ShaftStats | null => {
-    const before = snapshot();
-    const result = refitShaft(set, group, reference(), namePad);
-    if (result === null) return null;
-    set = result.set;
-    operations.refit.add(group);
-    commit(before);
-    return result.stats;
-  };
-
   const doRenumber = (group: string): number => {
     const before = snapshot();
     const result = renumberTipFirst(set, group, reference(), namePad);
@@ -1627,9 +1650,34 @@ export function createModel(host: ModuleHost): SeegModel {
     return writeFiles(savePath, saveSiblings);
   };
 
-  // ---- QC export sheet (T1, 2026-09-03) ------------------------------------------------------------
+  // ---- QC export (0.2.1) ---------------------------------------------------------------------
 
-  type QcOutcome = 'ok' | 'no-derivatives' | 'no-canvas' | 'error';
+  /**
+   * **Why this asks for a Save sheet, and why the released 0.2.0 reported `error` three times.**
+   *
+   * 0.2.0 wrote straight to the `{derivatives}` paths `host.files.siblings` had resolved when the
+   * table was opened. Those paths were *found*, not *admitted*: the host admits a path for writing
+   * only when a module's own Save sheet returns it (`main/module-io.ts#admitModuleWrite`), and
+   * sibling discovery is a read-side probe that admits nothing. So every `files.writeBinary` and
+   * `files.writeText` came back `{ ok: false, error: 'not on the extension write list' }`, and the
+   * sheet — which turned every failure into the bare string `'error'` — could not say so.
+   *
+   * Both halves are fixed here. The export asks `saveDialog('qc-figures', …)` **once**, pre-filled
+   * with the `{derivatives}` default so pressing Save puts the figures exactly where 0.2.0 meant to
+   * put them, and remembers what that sheet admitted for the rest of the session. And an outcome is
+   * now a reason, not a word: whatever the host said, or which precondition was missing.
+   */
+  interface QcOutcome {
+    ok: boolean;
+    /** What to show the user: the path written, or the reason nothing was. */
+    detail: string;
+  }
+
+  const qcFailed = (reason: string): QcOutcome => ({ ok: false, detail: reason });
+
+  /** The message for a thrown error, which is what the sheet used to swallow into `'error'`. */
+  const reasonOf = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
 
   /** `qcFound`'s value at one of `src/qc/paths.ts`'s `FROM_ANCHOR_QC_*` templates, or null. */
   const qcTemplate = (template: string): string | null => {
@@ -1638,64 +1686,136 @@ export function createModel(host: ModuleHost): SeegModel {
   };
 
   /**
-   * The stem a figure is named after outside a derivatives tree: the loaded table's own stem, so a
-   * plain folder of files still gets sensible names (`<stem>_desc-spacing_qc.svg`) rather than a
-   * `{sub}`-shaped placeholder no BIDS anchor produced.
+   * The Save sheet's default path: the BIDS one when the anchor resolved a derivatives tree,
+   * otherwise the reslice figure beside the table itself, named after the table's own stem — a
+   * plain folder of files should still get a sensible name rather than a `{sub}`-shaped placeholder
+   * no anchor produced.
    */
-  const qcStem = (): string => (tsvPath === null ? '' : stemOf(baseNameOf(tsvPath)));
-
-  const qcDefaultName = (desc: string, ext: string): string => {
-    const stem = qcStem();
-    return stem === '' ? `${desc}_qc.${ext}` : `${stem}_desc-${desc}_qc.${ext}`;
+  const qcDefaultReslicePath = (): string | null => {
+    const bids = qcTemplate(FROM_ANCHOR_QC_RESLICE_PDF);
+    if (bids !== null) return bids;
+    if (tsvPath === null) return null;
+    const directory = tsvPath.slice(0, Math.max(0, tsvPath.lastIndexOf('/') + 1));
+    return `${directory}${stemOf(baseNameOf(tsvPath))}_desc-reslice_qc.pdf`;
   };
 
-  const doExportSpacing = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const svgPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? qcDefaultName('spacing', 'svg'))}` : qcTemplate(FROM_ANCHOR_QC_SPACING_SVG);
-    const tsvOutPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) ?? qcDefaultName('spacing', 'tsv'))}` : qcTemplate(FROM_ANCHOR_QC_SPACING_TSV);
-    if (svgPath === null || tsvOutPath === null) return 'no-derivatives';
-    try {
-      const descPath = qcTemplate(DATASET_DESCRIPTION_TEMPLATE);
-      if (descPath !== null) await ensureDatasetDescription(host, descPath, seegManifest.version);
-      const svg = spacingHistogramSvg(set, { subjectId: subjectOf(tsvPath ?? '') ?? undefined });
-      const svgResult = await host.files.writeText(svgPath, svg, { backup: true });
-      const tsvResult = await host.files.writeText(tsvOutPath, spacingTsv(set), { backup: true });
-      return svgResult.ok && tsvResult.ok ? 'ok' : 'error';
-    } catch {
-      return 'error';
+  /**
+   * The admitted output paths, asking the Save sheet the first time (or when `reask`).
+   *
+   * The sheet's chosen file is the reslice PDF; the 3-D figure and the `dataset_description.json`
+   * come back as its declared siblings, already substituted and already admitted by main. The two
+   * implant templates are tried in the manifest's own preference order — main drops the BIDS one
+   * for an anchor with no `sub-` entity, and the `{stem}` one is what covers that table.
+   */
+  const ensureQcTargets = async (reask: boolean): Promise<QcTargets | null> => {
+    if (!reask && qcAdmitted !== null) return qcAdmitted;
+    const target = await host.files.saveDialog('qc-figures', qcDefaultReslicePath());
+    if (target === null) return null;
+    qcAdmitted = {
+      reslicePdf: target.path,
+      implant3dPdf:
+        target.siblings[WRITER_IMPLANT3D_BIDS] ?? target.siblings[WRITER_IMPLANT3D_STEM] ?? null,
+      datasetDescription: target.siblings[DATASET_DESCRIPTION_TEMPLATE] ?? null,
+    };
+    return qcAdmitted;
+  };
+
+  /** A4 portrait, in points, and the margin every page keeps. */
+  const PAGE_WIDTH_PT = 595;
+  const PAGE_HEIGHT_PT = 842;
+  const PAGE_MARGIN_PT = 36;
+  /** How much the 0.4 mm-per-pixel reslice image is enlarged before it is encoded. */
+  const RESLICE_SCALE = 4;
+
+  /**
+   * One electrode's page: the slab enlarged {@link RESLICE_SCALE}× with its rings and in-plane
+   * labels drawn on, encoded as JPEG, placed under a Helvetica caption carrying the **3-D** gaps.
+   *
+   * JPEG rather than PNG because `qc/pdf.ts` passes `/DCTDecode` bytes straight through; a PNG
+   * would have to be decoded and re-deflated by hand inside a zero-import bundle.
+   */
+  const resliceTilePage = async (tile: ResliceTile): Promise<PdfPage> => {
+    const { width, height } = resliceImageSize(tile);
+    const slab = new OffscreenCanvas(width, height);
+    const slabCtx = slab.getContext('2d');
+    if (slabCtx === null) throw new Error('this host would not give a 2-D canvas context');
+    paintResliceImage(slabCtx, tile);
+
+    const page = new OffscreenCanvas(width * RESLICE_SCALE, height * RESLICE_SCALE);
+    const ctx = page.getContext('2d');
+    if (ctx === null) throw new Error('this host would not give a 2-D canvas context');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(slab, 0, 0, page.width, page.height);
+    drawResliceOverlay(ctx, tile, RESLICE_SCALE);
+
+    const blob = await page.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+    const jpeg = new Uint8Array(await blob.arrayBuffer());
+
+    const caption = resliceCaption(tile);
+    const top = PAGE_HEIGHT_PT - PAGE_MARGIN_PT - caption.length * 16;
+    // Fit the image into what is left, aspect preserved — a reslice plane is tall and narrow, so
+    // the height is nearly always the binding constraint and the picture is centred horizontally.
+    const boxWidth = PAGE_WIDTH_PT - 2 * PAGE_MARGIN_PT;
+    const boxHeight = top - PAGE_MARGIN_PT;
+    const fit = Math.min(boxWidth / page.width, boxHeight / page.height);
+    const drawWidth = page.width * fit;
+    const drawHeight = page.height * fit;
+    return {
+      widthPt: PAGE_WIDTH_PT,
+      heightPt: PAGE_HEIGHT_PT,
+      jpeg,
+      imageWidthPx: page.width,
+      imageHeightPx: page.height,
+      imageRect: {
+        x: (PAGE_WIDTH_PT - drawWidth) / 2,
+        y: PAGE_MARGIN_PT + (boxHeight - drawHeight) / 2,
+        width: drawWidth,
+        height: drawHeight,
+      },
+      text: caption.map((value, index) => ({
+        x: PAGE_MARGIN_PT,
+        y: PAGE_HEIGHT_PT - PAGE_MARGIN_PT - index * 16,
+        sizePt: index === 0 ? 12 : 9,
+        value,
+      })),
+    };
+  };
+
+  /** The per-electrode reslice report — one page per electrode. */
+  const doExportReslicePdf = async (path: string): Promise<QcOutcome> => {
+    if (typeof OffscreenCanvas === 'undefined') {
+      return qcFailed('this host has no OffscreenCanvas, so a figure cannot be composed');
     }
-  };
-
-  /** Composes through `qc/export.ts`; see its header for what needs a running host to verify. */
-  const doExportReslicePng = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) ?? qcDefaultName('reslice', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG);
-    if (pngPath === null) return 'no-derivatives';
-    if (typeof OffscreenCanvas === 'undefined' || datasetId === null) return 'no-canvas';
+    if (datasetId === null) {
+      return qcFailed('no CT is bound — open the CT these contacts were localised on first');
+    }
     try {
       const t1DatasetId = host.scene.datasets().find((d) => d.path === t1Path)?.id ?? null;
       const tiles = await buildResliceTiles(host, set, { ctDatasetId: datasetId, t1DatasetId });
-      if (tiles.length === 0) return 'error';
-      const columns = 3;
-      const tileW = 200;
-      const tileH = 220;
-      const rows = Math.ceil(tiles.length / columns);
-      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows);
-      const ctx = canvas.getContext('2d');
-      if (ctx === null) return 'error';
-      compositeReslice(ctx, tiles, tileW, tileH);
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      const written = await host.files.writeBinary(pngPath, bytes, { backup: true });
-      return written.ok ? 'ok' : 'error';
-    } catch {
-      return 'error';
+      if (tiles.length === 0) {
+        return qcFailed('no electrode has the two contacts a reslice plane needs');
+      }
+      const pages: PdfPage[] = [];
+      for (const tile of tiles) pages.push(await resliceTilePage(tile));
+      const bytes = buildPdf(pages, { title: 'sEEG per-electrode reslice QC' });
+      const written = await host.files.writeBinary(path, bytes, { backup: true });
+      return written.ok
+        ? { ok: true, detail: `${tiles.length} pages → ${baseNameOf(path)}` }
+        : qcFailed(written.error);
+    } catch (error: unknown) {
+      return qcFailed(reasonOf(error));
     }
   };
 
-  /** `captureImplant3dViews` (`qc/implant3d.ts`) owns the setView/screenshot sequence; `degraded` is surfaced here as a toast. */
-  const doExportImplant3dPng = async (folderOverride: string | null): Promise<QcOutcome> => {
-    const pngPath = folderOverride !== null ? `${folderOverride}/${baseNameOf(qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) ?? qcDefaultName('implant3d', 'png'))}` : qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG);
-    if (pngPath === null) return 'no-derivatives';
-    if (typeof OffscreenCanvas === 'undefined') return 'no-canvas';
+  /**
+   * The 3-D implant report — the four views tiled with the legend, on one page.
+   * `captureImplant3dViews` (`qc/implant3d.ts`) owns the setView/screenshot sequence; `degraded` is
+   * surfaced as a toast rather than a failure, because one view is still a figure.
+   */
+  const doExportImplant3dPdf = async (path: string): Promise<QcOutcome> => {
+    if (typeof OffscreenCanvas === 'undefined') {
+      return qcFailed('this host has no OffscreenCanvas, so a figure cannot be composed');
+    }
     try {
       const { tiles, degraded } = await captureImplant3dViews(host.capture, { background: 'theme' });
       if (degraded) {
@@ -1710,73 +1830,99 @@ export function createModel(host: ModuleHost): SeegModel {
           bitmap: await createImageBitmap(new Blob([tile.png.slice()])),
         }))
       );
-      const tileW = 320;
-      const tileH = 280;
+      const tileW = 640;
+      const tileH = 560;
       const columns = Math.min(2, Math.max(1, bitmaps.length));
       const rows = Math.ceil(bitmaps.length / columns);
       const legend = legendOf(set.groups);
-      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows + legend.length * 14 + 24);
+      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows + legend.length * 28 + 48);
       const ctx = canvas.getContext('2d');
-      if (ctx === null) return 'error';
+      if (ctx === null) throw new Error('this host would not give a 2-D canvas context');
+      // JPEG has no alpha, so the page is painted first: an unpainted canvas encodes as black and
+      // the legend is drawn in white.
+      ctx.fillStyle = '#111111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       compositeImplant3d(ctx, bitmaps, legend, tileW, tileH);
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      const written = await host.files.writeBinary(pngPath, bytes, { backup: true });
-      return written.ok ? 'ok' : 'error';
-    } catch {
-      return 'error';
-    }
-  };
+      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+      const jpeg = new Uint8Array(await blob.arrayBuffer());
 
-  /** The QC sheet's Save as… override: a folder, through `host.files.saveDialog`. */
-  const chooseQcFolder = async (): Promise<string | null> => {
-    const defaultName = qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) ?? qcDefaultName('spacing', 'svg');
-    const target = await host.files.saveDialog('qc-spacing-svg', defaultName);
-    if (target === null) return null;
-    const slash = Math.max(target.path.lastIndexOf('/'), target.path.lastIndexOf('\\'));
-    return slash === -1 ? null : target.path.slice(0, slash);
+      // Landscape, because four tiled views are wider than they are tall.
+      const pageWidth = PAGE_HEIGHT_PT;
+      const pageHeight = PAGE_WIDTH_PT;
+      const boxWidth = pageWidth - 2 * PAGE_MARGIN_PT;
+      const boxHeight = pageHeight - 2 * PAGE_MARGIN_PT - 20;
+      const fit = Math.min(boxWidth / canvas.width, boxHeight / canvas.height);
+      const caption = `sEEG implant, ${set.groups.length} electrodes, ${set.contacts.length} contacts`;
+      const bytes = buildPdf(
+        [
+          {
+            widthPt: pageWidth,
+            heightPt: pageHeight,
+            jpeg,
+            imageWidthPx: canvas.width,
+            imageHeightPx: canvas.height,
+            imageRect: {
+              x: (pageWidth - canvas.width * fit) / 2,
+              y: PAGE_MARGIN_PT,
+              width: canvas.width * fit,
+              height: canvas.height * fit,
+            },
+            text: [
+              { x: PAGE_MARGIN_PT, y: pageHeight - PAGE_MARGIN_PT, sizePt: 12, value: caption },
+            ],
+          },
+        ],
+        { title: 'sEEG 3-D implant QC' }
+      );
+      const written = await host.files.writeBinary(path, bytes, { backup: true });
+      return written.ok
+        ? { ok: true, detail: `${tiles.length} views → ${baseNameOf(path)}` }
+        : qcFailed(written.error);
+    } catch (error: unknown) {
+      return qcFailed(reasonOf(error));
+    }
   };
 
   const runQcExport = async (opts: {
-    spacing: boolean;
     reslice: boolean;
     implant3d: boolean;
-    outputFolder?: string;
+    /** Ask the Save sheet again even though this session already has admitted paths. */
+    chooseOutput?: boolean;
   }): Promise<Record<string, QcOutcome>> => {
-    let folderOverride = opts.outputFolder ?? null;
-    if (folderOverride === null) {
-      // Ask once, up front, if any requested figure's default path is unresolvable, and use the
-      // chosen folder for all of them.
-      const needsFolder =
-        (opts.spacing &&
-          (qcTemplate(FROM_ANCHOR_QC_SPACING_SVG) === null ||
-            qcTemplate(FROM_ANCHOR_QC_SPACING_TSV) === null)) ||
-        (opts.reslice && qcTemplate(FROM_ANCHOR_QC_RESLICE_PNG) === null) ||
-        (opts.implant3d && qcTemplate(FROM_ANCHOR_QC_IMPLANT3D_PNG) === null);
-      if (needsFolder) {
-        const chosen = await chooseQcFolder();
-        if (chosen === null) {
-          host.ui.toast('warn', 'QC export cancelled — no output folder.');
-          return {};
-        }
-        folderOverride = chosen;
+    if (!opts.reslice && !opts.implant3d) return {};
+    const targets = await ensureQcTargets(opts.chooseOutput === true);
+    if (targets === null) {
+      host.ui.toast('warn', 'QC export cancelled — no output chosen.');
+      return {};
+    }
+    // Written once, and only where a derivatives tree resolved: outside one there is no BIDS
+    // dataset for it to describe.
+    if (targets.datasetDescription !== null) {
+      try {
+        await ensureDatasetDescription(host, targets.datasetDescription, seegManifest.version);
+      } catch {
+        // A missing sidecar is not a reason to withhold the figures the user asked for.
       }
     }
     const results: Record<string, QcOutcome> = {};
-    if (opts.spacing) results['spacing'] = await doExportSpacing(folderOverride);
-    if (opts.reslice) results['reslice'] = await doExportReslicePng(folderOverride);
-    if (opts.implant3d) results['implant3d'] = await doExportImplant3dPng(folderOverride);
-    const ok = Object.values(results).filter((r) => r === 'ok').length;
-    const total = Object.keys(results).length;
-    if (total > 0) {
-      const noDerivatives = Object.values(results).some((r) => r === 'no-derivatives');
-      host.ui.toast(
-        ok === total ? 'info' : 'warn',
-        noDerivatives
-          ? `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written — no derivatives tree found for the anchor.`
-          : `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written.`
-      );
+    if (opts.reslice) results['reslice'] = await doExportReslicePdf(targets.reslicePdf);
+    if (opts.implant3d) {
+      results['implant3d'] =
+        targets.implant3dPdf === null
+          ? qcFailed('the Save sheet admitted no second path for the 3-D figure')
+          : await doExportImplant3dPdf(targets.implant3dPdf);
     }
+    const ok = Object.values(results).filter((r) => r.ok).length;
+    const total = Object.keys(results).length;
+    const failures = Object.entries(results).filter(([, r]) => !r.ok);
+    host.ui.toast(
+      ok === total ? 'info' : 'warn',
+      failures.length === 0
+        ? `QC export: ${ok}/${total} figure${total === 1 ? '' : 's'} written.`
+        : `QC export: ${ok}/${total} written. ${failures
+            .map(([name, r]) => `${name}: ${r.detail}`)
+            .join('; ')}`
+    );
     return results;
   };
 
@@ -2146,17 +2292,6 @@ export function createModel(host: ModuleHost): SeegModel {
         return step(1);
       case 'prev':
         return step(-1);
-      case 'refit': {
-        if (electrode === null) return;
-        const stats = doRefit(electrode);
-        host.ui.toast(
-          'info',
-          stats === null
-            ? 'An electrode needs two contacts to re-fit.'
-            : `Re-fitted ${electrode}: RMS ${(stats.rmsMm ?? 0).toFixed(2)} mm, pitch ${(stats.pitchMm ?? 0).toFixed(2)} mm.`
-        );
-        return;
-      }
       case 'renumber': {
         if (electrode === null) return;
         const renamed = doRenumber(electrode);
@@ -2318,17 +2453,6 @@ export function createModel(host: ModuleHost): SeegModel {
         const reports = await doExtend(groups, radiusMm);
         return { electrodes: reports };
       }
-      case 'refit': {
-        const wanted = args['electrode'];
-        const groups = typeof wanted === 'string' ? [wanted] : set.groups.map((g) => g.name);
-        const results = groups
-          .map((group) => doRefit(group))
-          .filter((s): s is ShaftStats => s !== null)
-          .map((s) => ({ electrode: s.electrode, rmsMm: s.rmsMm, spacingCv: s.spacingCv }));
-        // Wrapped in an object because `ModuleInstance.runOperation` answers a `Record`, and
-        // `host.ts` is frozen: an array is not one.
-        return { electrodes: results };
-      }
       case 'renumber': {
         const wanted = args['electrode'];
         const groups = typeof wanted === 'string' ? [wanted] : set.groups.map((g) => g.name);
@@ -2398,6 +2522,37 @@ export function createModel(host: ModuleHost): SeegModel {
         if (result === null) throw new ModuleHostError(`could not write ${path}`);
         return { path: result.path, editlog: result.editlog };
       }
+      case 'export-qc': {
+        const out = String(args['out'] ?? '');
+        if (out === '') throw new ModuleHostError('export-qc needs an `out` name');
+        // Like `save`: a `--job` window opens no Save sheet, so `run.ts` hands `out` over as an
+        // absolute path under `--out` and `job-runner.ts` has already admitted it **and every one
+        // of this manifest's writers' siblings beside it** (`job.ts#moduleOutTargets`). That is
+        // where the second figure's admission comes from, and `implant3dBesideReslice` re-derives
+        // the name main substituted — the two are pinned together in `test/qc/paths.test.ts`.
+        const directory =
+          tsvPath === null ? '' : tsvPath.slice(0, Math.max(0, tsvPath.lastIndexOf('/') + 1));
+        const reslicePdf = out.startsWith('/') ? out : `${directory}${out}`;
+        const writtenIn = reslicePdf.slice(0, Math.max(0, reslicePdf.lastIndexOf('/') + 1));
+        qcAdmitted = {
+          reslicePdf,
+          implant3dPdf: `${writtenIn}${implant3dBesideReslice(baseNameOf(reslicePdf))}`,
+          // No sheet ran, so no `{derivatives}` root was resolved and nothing admits the sidecar.
+          datasetDescription: null,
+        };
+        const results = await runQcExport({
+          reslice: args['reslice'] !== false,
+          implant3d: args['implant3d'] !== false,
+        });
+        // A job reports what happened rather than throwing on a figure it could not compose: the
+        // reason is the value, which is the same contract the panel now shows a person.
+        return Object.fromEntries(
+          Object.entries(results).map(([name, outcome]) => [
+            name,
+            { ok: outcome.ok, detail: outcome.detail },
+          ])
+        );
+      }
       default:
         throw new ModuleHostError(`sEEG has no operation "${op}"`);
     }
@@ -2457,6 +2612,7 @@ export function createModel(host: ModuleHost): SeegModel {
       applyTable(path, text);
       const found = await host.files.siblings(path);
       qcFound = found;
+      qcAdmitted = null;
       applyDerivativesDefaultSave(found);
       const bundle = bundleOf(found);
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
@@ -2470,6 +2626,7 @@ export function createModel(host: ModuleHost): SeegModel {
 
     async onSibling(anchor, found) {
       qcFound = found;
+      qcAdmitted = null;
       const bundle = bundleOf(found);
       if (bundle.tsv !== null && tsvPath === null) {
         const text = await host.files.readText(bundle.tsv);
@@ -2591,8 +2748,6 @@ export function createModel(host: ModuleHost): SeegModel {
     exportQc(opts) {
       return runQcExport(opts);
     },
-
-    chooseQcFolder,
   };
 }
 

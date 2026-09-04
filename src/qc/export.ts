@@ -1,22 +1,24 @@
 /**
- * The QC export sheet's host-facing half: chunked `sampleVolume` calls, `OffscreenCanvas`
- * compositing for the reslice and implant figures, and the `files.writeBinary` / `writeText` calls
- * that land the five outputs `qc/paths.ts` names. `qc/reslice.ts` and `qc/histogram.ts` hold the
- * geometry a synthetic fixture can check; this file is the part that only a running host can
- * exercise, and it is written so every host call is behind a narrow, mockable surface
+ * The QC export's host-facing half: chunked `sampleVolume` calls and the canvas painting the two
+ * figures are composed from. `qc/reslice.ts` and `qc/implant3d.ts` hold the geometry and the capture
+ * sequence a synthetic fixture can check; `qc/pdf.ts` turns the encoded pictures into a document;
+ * this file is the part in between, written so every host call is behind a narrow, mockable surface
  * (`test/setup.ts`'s pattern — see `test/qc/export.test.ts`).
  *
+ * **The painting is split in two on purpose.** `paintResliceImage` writes the sampled slab with
+ * `putImageData`, which cannot scale, so it is always 1 px per grid sample; `drawResliceOverlay`
+ * draws the rings and the distance labels at whatever integer `scale` the caller enlarged that
+ * image to. Both take a plain 2D context, so both run under a test with no `OffscreenCanvas`.
+ *
  * **What could not be verified without a running host**: the actual pixel output of `sampleVolume`
- * and `capture.screenshot`, and whether `OffscreenCanvas` behaves identically to the app's renderer
- * process. The chunking math and the file-write sequencing are exercised against a mock host.
+ * and `capture.screenshot`, and whether `OffscreenCanvas` and its JPEG encoder behave identically to
+ * the app's renderer process. The chunking math and the file-write sequencing are exercised against
+ * a mock host; `test/qc/pdf.test.ts` reads the produced document back.
  */
 
 import type { ContactSet } from '@tetravox/module-sdk';
 import { contacts } from '@tetravox/module-sdk';
-import { spacingHistogramSvg, nominalPitchesFromSidecar } from './histogram';
-import { spacingTsv } from './tsv';
 import { datasetDescriptionJson } from './datasetDescription';
-import { qcOutputPaths } from './paths';
 import { planeBasisFor, resliceGrid, resliceMarks, type ResliceGrid } from './reslice';
 
 const { contactsOf, groupNames } = contacts;
@@ -98,38 +100,6 @@ export async function ensureDatasetDescription(
   await host.files.writeText(path, datasetDescriptionJson(manifestVersion), { backup: false });
 }
 
-export interface SpacingExportResult {
-  svgPath: string;
-  tsvPath: string;
-  ok: boolean;
-}
-
-/** The spacing histogram (SVG) and its TSV, plus the dataset_description sidecar. */
-export async function exportSpacing(
-  host: ExportHost,
-  set: ContactSet,
-  opts: {
-    derivativesRoot: string;
-    subjectId: string;
-    manifestVersion: string;
-    geometrySidecarPath?: string;
-  }
-): Promise<SpacingExportResult> {
-  const paths = qcOutputPaths(opts.derivativesRoot, opts.subjectId);
-  await ensureDatasetDescription(host, paths.datasetDescription, opts.manifestVersion);
-
-  let sidecarPitches: Record<string, number> = {};
-  if (opts.geometrySidecarPath !== undefined) {
-    const text = await host.files.readText(opts.geometrySidecarPath);
-    if (text !== null) sidecarPitches = nominalPitchesFromSidecar(text);
-  }
-
-  const svg = spacingHistogramSvg(set, { sidecarPitches, subjectId: opts.subjectId });
-  const svgWritten = await host.files.writeText(paths.spacingSvg, svg, { backup: true });
-  const tsvWritten = await host.files.writeText(paths.spacingTsv, spacingTsv(set), { backup: true });
-  return { svgPath: paths.spacingSvg, tsvPath: paths.spacingTsv, ok: svgWritten.ok && tsvWritten.ok };
-}
-
 /**
  * One electrode's reslice tile: the sampled T1/CT slabs plus where the contact rings and distance
  * labels land, ready for `compositeResliceCanvas` to draw.
@@ -166,88 +136,117 @@ export async function buildResliceTiles(
   return tiles;
 }
 
+/** The pixel size of one electrode's reslice image: 1 px per grid sample, before any enlargement. */
+export function resliceImageSize(tile: ResliceTile): { width: number; height: number } {
+  return { width: tile.grid.nAcross, height: tile.grid.nAlong };
+}
+
+/** The 2nd/99th percentile of the finite values, for the T1 window. Empty input windows to 0. */
+function percentile(values: readonly number[], p: number): number {
+  const sorted = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)));
+  return sorted[idx] as number;
+}
+
 /**
- * Draws the composited reslice grid (T1 grey, CT ≥1200 HU warm ramp, cyan rings, a green square at
- * contact 1, distance labels) into `canvas`, tiling every electrode into 3 columns.
+ * Paints one electrode's sampled slab into `ctx` at 1 px per grid sample: T1 as grey windowed to
+ * its own 2nd–99th percentile, CT at or above 1200 HU as a warm ramp over it.
  *
- * Takes an already-constructed `OffscreenCanvas` (or a compatible 2D-context source) so the caller
- * decides how to obtain one — the app's renderer process has a real `OffscreenCanvas`; nothing here
- * assumes a DOM.
+ * `putImageData` ignores the transform and cannot scale, so the context must be exactly
+ * {@link resliceImageSize} — a caller that wants the figure bigger enlarges this image with
+ * `drawImage` and then calls {@link drawResliceOverlay} at the matching scale.
  */
-export function compositeReslice(
+export function paintResliceImage(
   ctx: OffscreenCanvasRenderingContext2D,
-  tiles: ResliceTile[],
-  tileWidthPx: number,
-  tileHeightPx: number
+  tile: ResliceTile
 ): void {
-  const columns = 3;
-  const percentile = (values: number[], p: number): number => {
-    if (values.length === 0) return 0;
-    const sorted = [...values].filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-    if (sorted.length === 0) return 0;
-    const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)));
-    return sorted[idx] as number;
-  };
-
-  tiles.forEach((tile, index) => {
-    const col = index % columns;
-    const row = Math.floor(index / columns);
-    const ox = col * tileWidthPx;
-    const oy = row * tileHeightPx;
-
-    const { nAlong, nAcross } = tile.grid;
-    const t1Values = tile.t1 !== null ? Array.from(tile.t1).filter((v) => Number.isFinite(v)) : [];
-    const lo = percentile(t1Values, 2);
-    const hi = percentile(t1Values, 99);
-    const image = ctx.createImageData(nAcross, nAlong);
-    for (let i = 0; i < nAlong; i++) {
-      for (let j = 0; j < nAcross; j++) {
-        const src = i * nAcross + j;
-        const px = (i * nAcross + j) * 4;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        const t1v = tile.t1?.[src];
-        if (t1v !== undefined && Number.isFinite(t1v)) {
-          const norm = hi > lo ? Math.min(1, Math.max(0, (t1v - lo) / (hi - lo))) : 0;
-          r = g = b = Math.round(norm * 255);
-        }
-        const ctv = tile.ct?.[src];
-        if (ctv !== undefined && Number.isFinite(ctv) && ctv >= 1200) {
-          // Warm ramp: orange scaling with HU above the 1200 floor, capped at 3000.
-          const norm = Math.min(1, (ctv - 1200) / 1800);
-          r = Math.round(255 * norm + r * (1 - norm));
-          g = Math.round(140 * norm + g * (1 - norm));
-          b = Math.round(b * (1 - norm));
-        }
-        image.data[px] = r;
-        image.data[px + 1] = g;
-        image.data[px + 2] = b;
-        image.data[px + 3] = 255;
+  const { nAlong, nAcross } = tile.grid;
+  const t1Values = tile.t1 === null ? [] : Array.from(tile.t1);
+  const lo = percentile(t1Values, 2);
+  const hi = percentile(t1Values, 99);
+  const image = ctx.createImageData(nAcross, nAlong);
+  for (let i = 0; i < nAlong; i++) {
+    for (let j = 0; j < nAcross; j++) {
+      const src = i * nAcross + j;
+      const px = src * 4;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      const t1v = tile.t1?.[src];
+      if (t1v !== undefined && Number.isFinite(t1v)) {
+        const norm = hi > lo ? Math.min(1, Math.max(0, (t1v - lo) / (hi - lo))) : 0;
+        r = g = b = Math.round(norm * 255);
       }
+      const ctv = tile.ct?.[src];
+      if (ctv !== undefined && Number.isFinite(ctv) && ctv >= 1200) {
+        // Warm ramp: orange scaling with HU above the 1200 floor, capped at 3000.
+        const norm = Math.min(1, (ctv - 1200) / 1800);
+        r = Math.round(255 * norm + r * (1 - norm));
+        g = Math.round(140 * norm + g * (1 - norm));
+        b = Math.round(b * (1 - norm));
+      }
+      image.data[px] = r;
+      image.data[px + 1] = g;
+      image.data[px + 2] = b;
+      image.data[px + 3] = 255;
     }
-    ctx.putImageData(image, ox, oy);
+  }
+  ctx.putImageData(image, 0, 0);
+}
 
-    ctx.save();
+/**
+ * Draws the contact rings, the green square at contact 1 and the per-gap distance labels over an
+ * image already enlarged by `scale`.
+ *
+ * The ring radius and the label size grow with `scale` so the annotation is the same fraction of
+ * the picture at any enlargement — the whole reason the scale is a parameter rather than a constant.
+ */
+export function drawResliceOverlay(
+  ctx: OffscreenCanvasRenderingContext2D,
+  tile: ResliceTile,
+  scale = 1
+): void {
+  ctx.save();
+  ctx.lineWidth = Math.max(1, 1.5 * scale);
+  for (const mark of tile.marks) {
     ctx.strokeStyle = '#00e5ff';
-    ctx.lineWidth = 1.5;
-    for (const mark of tile.marks) {
-      ctx.beginPath();
-      ctx.arc(ox + mark.pixel.x, oy + mark.pixel.y, 3.5, 0, Math.PI * 2);
-      ctx.stroke();
-      if (mark.ordinal === 1) {
-        ctx.strokeStyle = '#22c55e';
-        ctx.strokeRect(ox + mark.pixel.x - 4, oy + mark.pixel.y - 4, 8, 8);
-        ctx.strokeStyle = '#00e5ff';
-      }
+    ctx.beginPath();
+    ctx.arc(mark.pixel.x * scale, mark.pixel.y * scale, 3.5 * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    if (mark.ordinal === 1) {
+      ctx.strokeStyle = '#22c55e';
+      ctx.strokeRect(
+        mark.pixel.x * scale - 4 * scale,
+        mark.pixel.y * scale - 4 * scale,
+        8 * scale,
+        8 * scale
+      );
     }
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '10px sans-serif';
-    for (const label of tile.labels) {
-      ctx.fillText(label.distanceMm.toFixed(2), ox + label.pixel.x, oy + label.pixel.y);
-    }
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(tile.electrode, ox + 4, oy + 12);
-    ctx.restore();
-  });
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `${Math.round(10 * scale)}px sans-serif`;
+  for (const label of tile.labels) {
+    ctx.fillText(label.distanceMm.toFixed(2), label.pixel.x * scale, label.pixel.y * scale);
+  }
+  ctx.restore();
+}
+
+/**
+ * The caption lines printed on one electrode's page: the electrode, then its 3-D gap distances.
+ *
+ * The distances are the **3-D** ones (`contacts.distanceMm` between consecutive contacts), not the
+ * in-plane separation the picture shows — a contact a little off the reslice plane is nearer in the
+ * picture than it is in the head, and the number a reader quotes has to be the real one.
+ */
+export function resliceCaption(tile: ResliceTile): string[] {
+  const gaps = tile.labels.map((label) => label.distanceMm);
+  // ASCII only, deliberately: `qc/pdf.ts` embeds no font, so a character the base-14 WinAnsi
+  // encoding cannot name is dropped — an em dash here left the caption reading "A  6 contacts".
+  if (gaps.length === 0) return [`${tile.electrode}: one contact, no gap to report`];
+  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  return [
+    `${tile.electrode}: ${tile.marks.length} contacts, ${gaps.length} gaps, mean ${mean.toFixed(2)} mm (3-D)`,
+    `gaps (mm): ${gaps.map((g) => g.toFixed(2)).join('  ')}`,
+  ];
 }

@@ -30,7 +30,6 @@ const CHORDS: Record<string, string> = {
   add: "a",
   snap: "s",
   "snap-electrode": "⇧S",
-  refit: "f",
   "flip-tip": "t",
   ghost: "g",
   wire: "d",
@@ -236,7 +235,7 @@ function ModelSection({
           }
         >
           {model === null ? (
-            <span className="text-tvx-dim">no model — Re-fit uses the observed median gap</span>
+            <span className="text-tvx-dim">no model — gaps are reported against the observed median</span>
           ) : (
             <>
               <span className={measured ? 'text-tvx-warn' : 'text-tvx-text'}>
@@ -558,18 +557,6 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
       <div className="flex flex-wrap items-center gap-1">
         <button
           type="button"
-          data-testid="seeg-refit"
-          className="tvx-btn"
-          title={label(
-            "refit",
-            "Fit a line, re-space evenly at the median gap, relabel tip-first",
-          )}
-          onClick={command("refit")}
-        >
-          Re-fit
-        </button>
-        <button
-          type="button"
           data-testid="seeg-renumber"
           className="tvx-btn"
           title="Number this electrode 1…n from the tip, without moving anything"
@@ -820,26 +807,21 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
  * belong in the undo/redo/persisted state every other control here shares).
  */
 function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
-  const [spacing, setSpacing] = useState(true);
   const [reslice, setReslice] = useState(true);
   const [implant3d, setImplant3d] = useState(true);
-  const [outputFolder, setOutputFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [summary, setSummary] = useState<string | null>(null);
+  /** One line per figure: what was written, or why it was not. Never a bare "error" (0.2.1). */
+  const [outcomes, setOutcomes] = useState<{ name: string; ok: boolean; detail: string }[]>([]);
 
-  const runExport = (): void => {
+  const runExport = (chooseOutput: boolean): void => {
     setBusy(true);
-    setSummary(null);
+    setOutcomes([]);
     void model
-      .exportQc({
-        spacing,
-        reslice,
-        implant3d,
-        outputFolder: outputFolder ?? undefined,
-      })
+      .exportQc({ reslice, implant3d, chooseOutput })
       .then((results) => {
-        const parts = Object.entries(results).map(([k, v]) => `${k}: ${v}`);
-        setSummary(parts.length === 0 ? "Nothing selected." : parts.join(", "));
+        setOutcomes(
+          Object.entries(results).map(([name, r]) => ({ name, ok: r.ok, detail: r.detail })),
+        );
       })
       .finally(() => setBusy(false));
   };
@@ -849,22 +831,14 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
       data-testid="seeg-qc-export"
       className="flex flex-col gap-1 border-t border-tvx-line pt-1.5 mt-1"
     >
-      <div className="text-tvx-dim">QC export</div>
-      <label className="flex items-center gap-1.5">
-        <input
-          type="checkbox"
-          checked={spacing}
-          onChange={(e: { target: { checked: boolean } }) => setSpacing(e.target.checked)}
-        />
-        Spacing histogram (+ TSV)
-      </label>
+      <div className="text-tvx-dim">QC export (PDF)</div>
       <label className="flex items-center gap-1.5">
         <input
           type="checkbox"
           checked={reslice}
           onChange={(e: { target: { checked: boolean } }) => setReslice(e.target.checked)}
         />
-        Per-electrode reslice
+        Per-electrode reslice — one page each
       </label>
       <label className="flex items-center gap-1.5">
         <input
@@ -872,21 +846,15 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
           checked={implant3d}
           onChange={(e: { target: { checked: boolean } }) => setImplant3d(e.target.checked)}
         />
-        3-D implant
+        3-D implant — four views and a legend
       </label>
-      <div className="flex items-center gap-1">
-        <span className="text-tvx-dim truncate" title={outputFolder ?? undefined}>
-          {outputFolder ??
-            "derivatives/tetravox/sub-<id>/ieeg/figures/ (default, once a table is open)"}
-        </span>
-      </div>
       <div className="flex items-center gap-1">
         <button
           type="button"
           data-testid="seeg-qc-export-run"
           className="tvx-btn"
-          disabled={busy || (!spacing && !reslice && !implant3d)}
-          onClick={runExport}
+          disabled={busy || (!reslice && !implant3d)}
+          onClick={() => runExport(false)}
         >
           Export
         </button>
@@ -894,27 +862,22 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
           type="button"
           data-testid="seeg-qc-export-choose-folder"
           className="tvx-btn"
-          onClick={() => {
-            void model.chooseQcFolder().then((folder) => {
-              if (folder !== null) setOutputFolder(folder);
-            });
-          }}
+          disabled={busy}
+          title="Choose where the two PDFs go. Asked once per table otherwise."
+          onClick={() => runExport(true)}
         >
-          Save as…
+          Export to…
         </button>
-        <button
-          type="button"
-          data-testid="seeg-qc-export-clear-folder"
-          className="tvx-btn"
-          disabled={outputFolder === null}
-          onClick={() => setOutputFolder(null)}
-        >
-          Use default folder
-        </button>
-        {summary !== null && (
-          <span className="ml-auto text-tvx-dim">{summary}</span>
-        )}
       </div>
+      {outcomes.length > 0 && (
+        <ul data-testid="seeg-qc-export-result" className="flex flex-col gap-0.5">
+          {outcomes.map((outcome) => (
+            <li key={outcome.name} className={outcome.ok ? "text-tvx-dim" : "text-tvx-warn"}>
+              {outcome.name}: {outcome.detail}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

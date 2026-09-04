@@ -27,12 +27,14 @@
  *
  * ## What renumbers, and what does not
  *
- * Only **Re-fit** and **Renumber tip-first** ever change a contact's number or name. Loading a table,
- * placing a contact, dragging one, snapping and deleting all leave the numbering exactly as it was.
- * So a clinical table's numbering — which is wired to the recording system through `csc` — can only
- * be changed by a button that says it changes it. Re-fit relabels because that is what Slicer's
- * Re-fit does and what its label promises; it does not re-derive the tip, it uses the electrode's
- * current one.
+ * Only **Renumber tip-first** ever changes a contact's number or name. Loading a table, placing a
+ * contact, dragging one, snapping and deleting all leave the numbering exactly as it was. So a
+ * clinical table's numbering — which is wired to the recording system through `csc` — can only be
+ * changed by a button that says it changes it.
+ *
+ * Slicer's **Re-fit** was the second such button and is gone as of 0.2.1: it re-spaced a shaft at
+ * its own median gap, which is a worse answer than the electrode model's own gaps `snap` now uses,
+ * and it relabelled while doing so — two effects behind one button.
  */
 
 import { contacts } from "@tetravox/module-sdk";
@@ -52,7 +54,6 @@ const {
   fitLine,
   lineMetrics,
   orderAlong,
-  respaceEven,
 } = contacts;
 /** Two ends that are this close to equidistant from the reference are a tie, in millimetres. */
 const TIP_TIE_MM = 1e-6;
@@ -285,62 +286,4 @@ export function renumberTipFirst(
     return { ...contact, name, ordinal: index + 1 };
   });
   return { set: withContacts(set, next), renamed };
-}
-
-export interface RefitResult {
-  set: ContactSet;
-  stats: ShaftStats;
-  renamed: { from: string; to: string }[];
-}
-
-/**
- * Re-fit one shaft: PCA line → project → re-space at the median gap → relabel tip-first.
- *
- * Slicer's `refitShaft`, with its two defects fixed. The **tip** is the electrode's own — pinned by
- * the user or derived by the stated heuristic — rather than an unconditional `+1`; and the relabel
- * pads to the file's width rather than dropping the leading zero.
- *
- * The contact nearest the tip keeps the tip slot, so a shaft whose contacts were already in order
- * stays in order and only moves onto the ideal grid. Its `original` is untouched: the point of
- * re-fitting is that the *file's* positions were noisy, and `status` has to keep saying so.
- */
-export function refitShaft(
-  set: ContactSet,
-  group: string,
-  reference: vec3,
-  pad: number,
-): RefitResult | null {
-  const contacts = contactsOf(set, group);
-  if (contacts.length < 2) return null;
-  const spec = set.groups.find((g) => g.name === group);
-  const tip =
-    spec === undefined
-      ? "low"
-      : resolveTip(
-          spec,
-          contacts.map((c) => c.position),
-          reference,
-        );
-
-  const positions = contacts.map((c) => c.position);
-  const spaced = respaceEven(positions);
-  if (spaced === null) return null;
-  // `respaceEven` answers in ascending-`t` order; the tip decides which end of that is contact 1.
-  const slots = tip === "low" ? spaced : [...spaced].reverse();
-
-  const ordered = tipFirstOrder(contacts, tip);
-  const renamed: { from: string; to: string }[] = [];
-  const next = ordered.map((contact, index) => {
-    const name = contactName(group, index + 1, pad);
-    if (name !== contact.name) renamed.push({ from: contact.name, to: name });
-    return {
-      ...contact,
-      name,
-      ordinal: index + 1,
-      position: slots[index] as vec3,
-    };
-  });
-
-  const after = withContacts(set, next);
-  return { set: after, stats: shaftStats(after, group), renamed };
 }

@@ -14,7 +14,6 @@ import type { Contact, ContactSet, vec3 } from "@tetravox/module-sdk";
 import {
   allShaftStats,
   flippedTip,
-  refitShaft,
   renumberTipFirst,
   resolveTip,
   shaftDiagram,
@@ -178,80 +177,6 @@ describe.skipIf(!HAS_CONTACTS)("renumberTipFirst", () => {
       set,
       renamed: [],
     });
-  });
-});
-
-describe.skipIf(!HAS_CONTACTS)("refitShaft", () => {
-  /**
-   * Perpendicular noise whose covariance with position along the shaft is exactly zero — the ends
-   * out one way, the middle out the other — so the fitted axis is the authored one and the pitch
-   * after a re-fit is exactly the authored 3.5 mm. Noise that leaned one way would tilt the fit and
-   * make the expectation a tolerance rather than a number.
-   */
-  const wobbleOf =
-    (n: number) =>
-    (i: number): vec3 => [0, 0, i === 0 || i === n - 1 ? 0.3 : -0.3];
-
-  it("puts the contacts on the fitted line and re-spaces them evenly", () => {
-    const contacts = shaft("L", [-60, 0, 0], [1, 0, 0], 3.5, 6, wobbleOf(6));
-    const result = refitShaft(setOf(...contacts), "L", HEAD_CENTRE, 2);
-    expect(result).not.toBeNull();
-    const after = (result as { set: ContactSet }).set;
-    const stats = shaftStats(after, "L");
-    // The residual collapses and the spacing becomes exact.
-    expect(stats.rmsMm).toBeCloseTo(0, 9);
-    expect(stats.spacingCv).toBeCloseTo(0, 9);
-    expect(stats.pitchMm).toBeCloseTo(3.5, 9);
-  });
-
-  it("relabels tip-first, and Re-fit is the only thing besides Renumber that relabels", () => {
-    const contacts = shaft("L", [-60, 0, 0], [1, 0, 0], 3.5, 4, wobbleOf(4));
-    const after = (
-      refitShaft(setOf(...contacts), "L", HEAD_CENTRE, 2) as { set: ContactSet }
-    ).set;
-    const ordered = contactsOf(after, "L");
-    expect(ordered.map((c) => c.name)).toEqual(["L01", "L02", "L03", "L04"]);
-    // Contact 1 is the deep end (largest x for a shaft entering from the left).
-    expect((ordered[0] as Contact).position[0]).toBeGreaterThan(
-      (ordered[3] as Contact).position[0],
-    );
-  });
-
-  it("respects a pinned tip rather than re-deriving it", () => {
-    const contacts = shaft("L", [-60, 0, 0], [1, 0, 0], 3.5, 4, wobbleOf(4));
-    const set = setOf(...contacts);
-    const pinned: ContactSet = {
-      ...set,
-      groups: [{ name: "L", color: paletteColor(0), tip: "low" }],
-    };
-    const after = (
-      refitShaft(pinned, "L", HEAD_CENTRE, 2) as { set: ContactSet }
-    ).set;
-    const ordered = contactsOf(after, "L");
-    // Pinned the other way: contact 1 is now the shallow end.
-    expect((ordered[0] as Contact).position[0]).toBeLessThan(
-      (ordered[3] as Contact).position[0],
-    );
-  });
-
-  it("leaves `original` alone, so `status` still says the file was wrong", () => {
-    const contacts = shaft("L", [-60, 0, 0], [1, 0, 0], 3.5, 4, wobbleOf(4));
-    const after = (
-      refitShaft(setOf(...contacts), "L", HEAD_CENTRE, 2) as { set: ContactSet }
-    ).set;
-    for (const contact of after.contacts)
-      expect(contact.original).not.toBeNull();
-  });
-
-  it("refuses a shaft with fewer than two contacts", () => {
-    expect(
-      refitShaft(
-        setOf(...shaft("A", [0, 0, 0], [1, 0, 0], 2, 1)),
-        "A",
-        HEAD_CENTRE,
-        2,
-      ),
-    ).toBeNull();
   });
 });
 
