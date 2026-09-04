@@ -133,7 +133,7 @@ function mockSet(): ContactSet {
 describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
   it('samples both volumes trilinearly and carries the electrode colour into the tile', async () => {
     const host = mockHost();
-    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', t1DatasetId: 't1' });
+    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', backgroundDatasetId: 't1' });
     expect(tiles).toHaveLength(1);
     expect(tiles[0]?.color).toBe(GROUP_CSS);
     for (const call of (host.scene.sampleVolume as ReturnType<typeof vi.fn>).mock.calls) {
@@ -145,7 +145,7 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
     const host = mockHost();
     const [tile] = await buildResliceTiles(host, mockSet(), {
       ctDatasetId: 'ct',
-      t1DatasetId: 't1',
+      backgroundDatasetId: 't1',
     });
     const image = resliceTileImage(tile as ResliceTile);
     expect(image.width).toBe((tile as ResliceTile).grid.nAlong);
@@ -162,7 +162,7 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
     const src = iu * t.nAcross + iv;
     expect((tile as ResliceTile).ct?.[src]).toBeCloseTo(2400, 6);
 
-    const t1 = (tile as ResliceTile).t1 as Float32Array;
+    const t1 = (tile as ResliceTile).background as Float32Array;
     const sorted = Array.from(t1).sort((a, b) => a - b);
     const at = (p: number): number => {
       const pos = (p / 100) * (sorted.length - 1);
@@ -180,7 +180,7 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
 
   it('gives a row more than the reference pitch only when its own panels need it', async () => {
     const host = mockHost();
-    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', t1DatasetId: 't1' });
+    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', backgroundDatasetId: 't1' });
     const layout = resliceLayout(tiles);
     expect(layout.boxes).toHaveLength(tiles.length);
     // One short lead: `aspect="equal"` makes its box taller than seegprep's 358 px row pitch, so the
@@ -193,7 +193,7 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
 
   it('draws the rings and the 3-D gap text in the electrode colour, and the tip square in lime', async () => {
     const host = mockHost();
-    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', t1DatasetId: 't1' });
+    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', backgroundDatasetId: 't1' });
     const { ctx, calls } = spyCtx();
     const drawImage = vi.fn();
     drawResliceFigure(ctx, tiles, drawImage, (text) => text.length * 6);

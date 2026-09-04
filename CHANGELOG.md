@@ -2,6 +2,30 @@
 
 ## 0.2.2 — 2026-09-03
 
+**re-released: 2026-09-04.** The QC figures no longer come out blank when the T1 is not open, and
+both are named for the same subject.
+
+- **The reslice always has anatomy behind it.** The T1 was only ever bound by a job's explicit `t1:`
+  argument — the sibling that finds `derivatives/SimNIBS/sub-<id>/m2m_<id>/T1.nii.gz` was declared on
+  the CT anchor and not on the electrodes table — so a session that opened the *table* had no T1 at
+  all and every panel came out CT metal on white paper. The table now finds the T1 the same way the
+  CT does, and the background falls back in a stated order: the bound T1, then an open T1 the module
+  did not bind, then any open non-CT volume, then the CT itself in a −100..300 HU soft-tissue window
+  (the caption says "CT soft-tissue grey" when that is what you are looking at). The export's result
+  names the volume it used, and says where an unopened T1 is so you can open it.
+
+- **A missing brain is said out loud.** The 3-D figure used to draw the leads floating in nothing.
+  When there is no T1 or tissue map, it now tries the CT's soft-tissue cut — the largest connected
+  component inside the skull — and if that is not a brain (too big, too boxy, or the wrong volume for
+  an adult brain) the panel and the export result carry the reason and the path of the T1 that would
+  fix it, instead of an empty page.
+
+- **Both figures are named for the subject.** With no BIDS derivatives tree to resolve against, the
+  reslice was named from the table's stem (`sub-P077_space-T1w_electrodes_desc-reslice_qc.pdf`) while
+  the implant figure beside it used the `sub-` entity — two names for one subject. Both now take
+  `sub-<id>` from the anchor path wherever it carries one, and fall back to the stem only for a table
+  with no subject entity at all.
+
 - **The QC figures now look like seegprep's.** Both exports were rebuilt to match the figures
   `seegprep` writes into `derivatives/seegprep/sub-<id>/ieeg/figures/`, so a subject's Tetravox QC
   and its seegprep QC can be put side by side and read the same way. The reslice figure is the

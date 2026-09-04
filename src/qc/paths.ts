@@ -115,6 +115,30 @@ export function qcOutputPaths(
  * PDF, main admitted every writer's siblings beside it, and this is how the module works out which
  * of those names it may use. `test/qc/paths.test.ts` holds it to the templates.
  */
+/**
+ * The figures' base name for an anchor outside a resolvable derivatives tree.
+ *
+ * `sub-<id>` whenever the anchor path carries the entity — in a directory or in the filename —
+ * because that is what names the *subject*, and the two figures then agree with each other and with
+ * the BIDS names. The stem is the fallback for a table that has no subject entity at all
+ * (`contacts.tsv`), where a `sub-` placeholder no path supplied would be a lie.
+ *
+ * Before 0.2.2's re-release this was the stem unconditionally, which is how P077's reslice came out
+ * as `sub-P077_space-T1w_electrodes_desc-reslice_qc.pdf` beside a correctly named implant figure.
+ */
+export function qcBaseName(anchorPath: string): { sub: string | null; stem: string } {
+  const name = anchorPath.split(/[/\\]/).pop() ?? anchorPath;
+  const stem = name.replace(/\.[^./]*$/, '');
+  const match = /(?:^|[/\\_])sub-([A-Za-z0-9]+)(?=[/\\_.]|$)/.exec(anchorPath);
+  return { sub: match === null ? null : (match[1] as string), stem };
+}
+
+/** The reslice figure's name for that anchor — `sub-<id>_desc-reslice_qc.pdf` where there is one. */
+export function qcResliceNameFor(anchorPath: string): string {
+  const { sub, stem } = qcBaseName(anchorPath);
+  return sub === null ? `${stem}_desc-reslice_qc.pdf` : qcResliceName(sub);
+}
+
 export function implant3dBesideReslice(anchorName: string): string {
   const stem = anchorName.replace(/\.[^./]*$/, '');
   const sub = /(?:^|_)sub-([A-Za-z0-9]+)(?:_|$)/.exec(stem);

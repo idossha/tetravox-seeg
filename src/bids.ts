@@ -48,6 +48,14 @@ export const FROM_TSV_CT = '../ct/{sub}_acq-bone_space-{space}_ct.nii.gz';
 export const FROM_TSV_COORDSYSTEM = '{sub}_space-{space}_coordsystem.json';
 export const FROM_TSV_EDITLOG = '{stem}_editlog.json';
 export const FROM_TSV_GEOMETRY = '{sub}_electrodes-geometry.json';
+/**
+ * The same SimNIBS T1, anchored on the table (0.2.2, re-released).
+ *
+ * The string is {@link FROM_CT_T1}'s — `ieeg/` and `ct/` are siblings under `sub-<id>/`, so the
+ * three-level ascent is the same from either — but it has to be declared on *both* anchor groups or
+ * a session that opened the table finds no T1 at all.
+ */
+export const FROM_TSV_T1 = FROM_CT_T1;
 
 /**
  * The default **save target** for the corrected table, under the dataset's own `derivatives/`
@@ -101,7 +109,7 @@ export function bundleOf(found: Record<string, string | null>): SubjectBundle {
   return {
     tsv: at(FROM_CT_TSV),
     ct: at(FROM_TSV_CT),
-    t1: at(FROM_CT_T1),
+    t1: at(FROM_CT_T1, FROM_TSV_T1),
     coordsystem: at(FROM_CT_COORDSYSTEM, FROM_TSV_COORDSYSTEM),
     editlog: at(FROM_CT_EDITLOG, FROM_TSV_EDITLOG),
     geometry: at(FROM_CT_GEOMETRY, FROM_TSV_GEOMETRY),

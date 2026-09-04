@@ -27,6 +27,7 @@ import {
   FROM_TSV_DERIVATIVES_CORRECTED_EDITLOG,
   FROM_TSV_EDITLOG,
   FROM_TSV_GEOMETRY,
+  FROM_TSV_T1,
   seegprepWarning,
   stemOf,
   subjectOf,
@@ -138,6 +139,7 @@ describe('the manifest and the module agree about the BIDS layout', () => {
       FROM_TSV_COORDSYSTEM,
       FROM_TSV_EDITLOG,
       FROM_TSV_GEOMETRY,
+      FROM_TSV_T1,
       ...qcCandidates,
     ]);
   });
