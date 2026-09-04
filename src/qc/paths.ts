@@ -26,6 +26,22 @@ export function qcImplant3dName(id: string): string {
   return `sub-${id}_desc-implant3d_qc.pdf`;
 }
 
+/**
+ * The PNG twin of each figure (0.2.2).
+ *
+ * seegprep writes its QC figures as PNGs (`reports/localize.py`, `..._desc-reslice_qc.png`), and a
+ * figure that is meant to be visually 1:1 with one has to be openable the same way. The PDF stays —
+ * it is the printable artefact — and the PNG carries the same pixels under seegprep's own name, so
+ * the two derivatives can be put side by side without converting anything.
+ */
+export function qcReslicePngName(id: string): string {
+  return `sub-${id}_desc-reslice_qc.png`;
+}
+
+export function qcImplant3dPngName(id: string): string {
+  return `sub-${id}_desc-implant3d_qc.png`;
+}
+
 /** `{derivatives}/tetravox/dataset_description.json` — written once if absent. */
 export const DATASET_DESCRIPTION_TEMPLATE = '{derivatives}/tetravox/dataset_description.json';
 
@@ -57,6 +73,11 @@ export const FROM_ANCHOR_QC_DATASET_DESCRIPTION = DATASET_DESCRIPTION_TEMPLATE;
  */
 export const WRITER_IMPLANT3D_BIDS = 'sub-{id}_desc-implant3d_qc.pdf';
 export const WRITER_IMPLANT3D_STEM = '{stem}-implant3d.pdf';
+/** The PNG twins, in the same preference order (0.2.2). */
+export const WRITER_RESLICE_PNG_BIDS = 'sub-{id}_desc-reslice_qc.png';
+export const WRITER_RESLICE_PNG_STEM = '{stem}.png';
+export const WRITER_IMPLANT3D_PNG_BIDS = 'sub-{id}_desc-implant3d_qc.png';
+export const WRITER_IMPLANT3D_PNG_STEM = '{stem}-implant3d.png';
 export const WRITER_BACKUP = '{name}.{stamp}.bak';
 
 export function datasetDescriptionPath(derivativesRoot: string): string {
@@ -70,6 +91,8 @@ export function qcOutputPaths(
   folder: string;
   reslicePdf: string;
   implant3dPdf: string;
+  reslicePng: string;
+  implant3dPng: string;
   datasetDescription: string;
 } {
   const folder = `${derivativesRoot}/${qcFolder(id)}`;
@@ -77,6 +100,8 @@ export function qcOutputPaths(
     folder,
     reslicePdf: `${folder}/${qcResliceName(id)}`,
     implant3dPdf: `${folder}/${qcImplant3dName(id)}`,
+    reslicePng: `${folder}/${qcReslicePngName(id)}`,
+    implant3dPng: `${folder}/${qcImplant3dPngName(id)}`,
     datasetDescription: datasetDescriptionPath(derivativesRoot),
   };
 }
@@ -94,4 +119,16 @@ export function implant3dBesideReslice(anchorName: string): string {
   const stem = anchorName.replace(/\.[^./]*$/, '');
   const sub = /(?:^|_)sub-([A-Za-z0-9]+)(?:_|$)/.exec(stem);
   return sub === null ? `${stem}-implant3d.pdf` : `sub-${sub[1]}_desc-implant3d_qc.pdf`;
+}
+
+/** The same arithmetic for the two PNG twins (0.2.2), against the same Save-sheet anchor. */
+export function pngBesideReslice(anchorName: string): { reslice: string; implant3d: string } {
+  const stem = anchorName.replace(/\.[^./]*$/, '');
+  const sub = /(?:^|_)sub-([A-Za-z0-9]+)(?:_|$)/.exec(stem);
+  return sub === null
+    ? { reslice: `${stem}.png`, implant3d: `${stem}-implant3d.png` }
+    : {
+        reslice: `sub-${sub[1]}_desc-reslice_qc.png`,
+        implant3d: `sub-${sub[1]}_desc-implant3d_qc.png`,
+      };
 }

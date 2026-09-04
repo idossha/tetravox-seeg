@@ -97,20 +97,30 @@ import {
   DATASET_DESCRIPTION_TEMPLATE,
   FROM_ANCHOR_QC_RESLICE_PDF,
   WRITER_IMPLANT3D_BIDS,
+  WRITER_IMPLANT3D_PNG_BIDS,
+  WRITER_IMPLANT3D_PNG_STEM,
   WRITER_IMPLANT3D_STEM,
+  WRITER_RESLICE_PNG_BIDS,
+  WRITER_RESLICE_PNG_STEM,
   implant3dBesideReslice,
+  pngBesideReslice,
 } from './qc/paths';
 import {
+  brainSurface,
+  buildBrainMask,
+  buildLeads,
   buildResliceTiles,
-  drawResliceOverlay,
+  centerMask,
+  drawImplantFigure,
+  drawResliceFigure,
   ensureDatasetDescription,
-  paintResliceImage,
-  resliceCaption,
-  resliceImageSize,
-  type ResliceTile,
+  implantFigureSize,
+  resliceLayout,
+  type DrawImageData,
 } from './qc/export';
-import { captureImplant3dViews, compositeImplant3d, legendOf } from './qc/implant3d';
-import { buildPdf, type PdfPage } from './qc/pdf';
+import type { BrainMask } from './qc/implant3d';
+import { tightBox, type Ctx2D, type Rect } from './qc/mpl';
+import { buildPdf } from './qc/pdf';
 
 const {
   CANONICAL_FIELDNAMES,
@@ -415,6 +425,9 @@ export function createModel(host: ModuleHost): SeegModel {
   interface QcTargets {
     reslicePdf: string;
     implant3dPdf: string | null;
+    /** 0.2.2 — the PNG twins, written from the same pixels as the PDFs. */
+    reslicePng: string | null;
+    implant3dPng: string | null;
     datasetDescription: string | null;
   }
   let qcAdmitted: QcTargets | null = null;
@@ -1715,74 +1728,156 @@ export function createModel(host: ModuleHost): SeegModel {
       reslicePdf: target.path,
       implant3dPdf:
         target.siblings[WRITER_IMPLANT3D_BIDS] ?? target.siblings[WRITER_IMPLANT3D_STEM] ?? null,
+      reslicePng:
+        target.siblings[WRITER_RESLICE_PNG_BIDS] ?? target.siblings[WRITER_RESLICE_PNG_STEM] ?? null,
+      implant3dPng:
+        target.siblings[WRITER_IMPLANT3D_PNG_BIDS] ??
+        target.siblings[WRITER_IMPLANT3D_PNG_STEM] ??
+        null,
       datasetDescription: target.siblings[DATASET_DESCRIPTION_TEMPLATE] ?? null,
     };
     return qcAdmitted;
   };
 
-  /** A4 portrait, in points, and the margin every page keeps. */
-  const PAGE_WIDTH_PT = 595;
-  const PAGE_HEIGHT_PT = 842;
-  const PAGE_MARGIN_PT = 36;
-  /** How much the 0.4 mm-per-pixel reslice image is enlarged before it is encoded. */
-  const RESLICE_SCALE = 4;
+  /** A4 landscape, in points — both figures are wider than they are tall. */
+  const PAGE_WIDTH_PT = 842;
+  const PAGE_HEIGHT_PT = 595;
+  const PAGE_MARGIN_PT = 18;
 
   /**
-   * One electrode's page: the slab enlarged {@link RESLICE_SCALE}× with its rings and in-plane
-   * labels drawn on, encoded as JPEG, placed under a Helvetica caption carrying the **3-D** gaps.
+   * A figure canvas: the 2-D context, the image-blitter `qc/export.ts` draws through, and a text
+   * measurer for the wrapped suptitle and the legend.
    *
-   * JPEG rather than PNG because `qc/pdf.ts` passes `/DCTDecode` bytes straight through; a PNG
-   * would have to be decoded and re-deflated by hand inside a zero-import bundle.
+   * The blitter is a second `OffscreenCanvas` per image because `putImageData` ignores the transform
+   * and cannot scale; the sampled slab is written there at one pixel per sample and then enlarged
+   * with `drawImage`, which is the one way to get a scaled `ImageData` onto a canvas.
    */
-  const resliceTilePage = async (tile: ResliceTile): Promise<PdfPage> => {
-    const { width, height } = resliceImageSize(tile);
-    const slab = new OffscreenCanvas(width, height);
-    const slabCtx = slab.getContext('2d');
-    if (slabCtx === null) throw new Error('this host would not give a 2-D canvas context');
-    paintResliceImage(slabCtx, tile);
-
-    const page = new OffscreenCanvas(width * RESLICE_SCALE, height * RESLICE_SCALE);
-    const ctx = page.getContext('2d');
-    if (ctx === null) throw new Error('this host would not give a 2-D canvas context');
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(slab, 0, 0, page.width, page.height);
-    drawResliceOverlay(ctx, tile, RESLICE_SCALE);
-
-    const blob = await page.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
-    const jpeg = new Uint8Array(await blob.arrayBuffer());
-
-    const caption = resliceCaption(tile);
-    const top = PAGE_HEIGHT_PT - PAGE_MARGIN_PT - caption.length * 16;
-    // Fit the image into what is left, aspect preserved — a reslice plane is tall and narrow, so
-    // the height is nearly always the binding constraint and the picture is centred horizontally.
-    const boxWidth = PAGE_WIDTH_PT - 2 * PAGE_MARGIN_PT;
-    const boxHeight = top - PAGE_MARGIN_PT;
-    const fit = Math.min(boxWidth / page.width, boxHeight / page.height);
-    const drawWidth = page.width * fit;
-    const drawHeight = page.height * fit;
-    return {
-      widthPt: PAGE_WIDTH_PT,
-      heightPt: PAGE_HEIGHT_PT,
-      jpeg,
-      imageWidthPx: page.width,
-      imageHeightPx: page.height,
-      imageRect: {
-        x: (PAGE_WIDTH_PT - drawWidth) / 2,
-        y: PAGE_MARGIN_PT + (boxHeight - drawHeight) / 2,
-        width: drawWidth,
-        height: drawHeight,
-      },
-      text: caption.map((value, index) => ({
-        x: PAGE_MARGIN_PT,
-        y: PAGE_HEIGHT_PT - PAGE_MARGIN_PT - index * 16,
-        sizePt: index === 0 ? 12 : 9,
-        value,
-      })),
+  const figureCanvas = (
+    width: number,
+    height: number
+  ): {
+    canvas: OffscreenCanvas;
+    ctx: Ctx2D;
+    drawImage: DrawImageData;
+    measure: (text: string) => number;
+  } => {
+    const canvas = new OffscreenCanvas(width, height);
+    const raw = canvas.getContext('2d');
+    if (raw === null) throw new Error('this host would not give a 2-D canvas context');
+    const ctx = raw as unknown as Ctx2D;
+    const drawImage: DrawImageData = (data, w, h, rect: Rect) => {
+      const scratch = new OffscreenCanvas(w, h);
+      const sctx = scratch.getContext('2d');
+      if (sctx === null) throw new Error('this host would not give a 2-D canvas context');
+      sctx.putImageData(new ImageData(data as unknown as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
+      raw.imageSmoothingEnabled = false; // matplotlib's `imshow` upsamples nearest-neighbour
+      raw.drawImage(scratch, rect.x, rect.y, rect.width, rect.height);
     };
+    return { canvas, ctx, drawImage, measure: (text) => raw.measureText(text).width };
   };
 
-  /** The per-electrode reslice report — one page per electrode. */
-  const doExportReslicePdf = async (path: string): Promise<QcOutcome> => {
+  /** One figure, on one landscape page, scaled to fit inside the margin. */
+  const onePageFrom = (jpeg: Uint8Array, width: number, height: number): Uint8Array[] => {
+    const boxWidth = PAGE_WIDTH_PT - 2 * PAGE_MARGIN_PT;
+    const boxHeight = PAGE_HEIGHT_PT - 2 * PAGE_MARGIN_PT;
+    const fit = Math.min(boxWidth / width, boxHeight / height);
+    return [
+      buildPdf(
+        [
+          {
+            widthPt: PAGE_WIDTH_PT,
+            heightPt: PAGE_HEIGHT_PT,
+            jpeg,
+            imageWidthPx: width,
+            imageHeightPx: height,
+            imageRect: {
+              x: (PAGE_WIDTH_PT - width * fit) / 2,
+              y: (PAGE_HEIGHT_PT - height * fit) / 2,
+              width: width * fit,
+              height: height * fit,
+            },
+          },
+        ],
+        { title: 'Tetravox sEEG QC' }
+      ),
+    ];
+  };
+
+  /**
+   * `savefig(bbox="tight")`: the white border measured off the rendered pixels and cropped away.
+   *
+   * Without it the figure carries the full `figsize` frame and comes out ~15% larger than seegprep's
+   * for the same content — the same picture, at a size that does not overlay.
+   */
+  const cropTight = (canvas: OffscreenCanvas): OffscreenCanvas => {
+    const ctx = canvas.getContext('2d');
+    if (ctx === null) return canvas;
+    const box = tightBox(
+      ctx.getImageData(0, 0, canvas.width, canvas.height).data,
+      canvas.width,
+      canvas.height
+    );
+    if (box.width === canvas.width && box.height === canvas.height) return canvas;
+    const out = new OffscreenCanvas(box.width, box.height);
+    const octx = out.getContext('2d');
+    if (octx === null) return canvas;
+    octx.fillStyle = '#ffffff';
+    octx.fillRect(0, 0, box.width, box.height);
+    octx.drawImage(canvas, -box.x, -box.y);
+    return out;
+  };
+
+  /** The canvas as PNG and as JPEG — the same pixels, in the two containers the export writes. */
+  const encodeFigure = async (
+    canvas: OffscreenCanvas
+  ): Promise<{ png: Uint8Array; jpeg: Uint8Array }> => {
+    const png = new Uint8Array(
+      await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
+    );
+    const jpeg = new Uint8Array(
+      await (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 })).arrayBuffer()
+    );
+    return { png, jpeg };
+  };
+
+  /**
+   * Writes a figure's PDF and, when the Save sheet admitted a name for it, its PNG.
+   *
+   * The PNG is best-effort: a figure the user asked for is not withheld because its second container
+   * had no admitted path, and the outcome says which files were written.
+   */
+  const writeFigure = async (
+    full: OffscreenCanvas,
+    pdfPath: string,
+    pngPath: string | null,
+    what: string
+  ): Promise<QcOutcome> => {
+    const canvas = cropTight(full);
+    const { png, jpeg } = await encodeFigure(canvas);
+    const pdfWritten = await host.files.writeBinary(
+      pdfPath,
+      onePageFrom(jpeg, canvas.width, canvas.height)[0] as Uint8Array,
+      { backup: true }
+    );
+    if (!pdfWritten.ok) return qcFailed(pdfWritten.error);
+    const names = [baseNameOf(pdfPath)];
+    if (pngPath !== null) {
+      const pngWritten = await host.files.writeBinary(pngPath, png, { backup: true });
+      if (pngWritten.ok) names.push(baseNameOf(pngPath));
+    }
+    return { ok: true, detail: `${what} → ${names.join(' + ')}` };
+  };
+
+  /**
+   * The per-electrode reslice figure — seegprep's `electrode_reslice` small multiples, one page.
+   *
+   * 0.2.1 wrote one PDF page per electrode; this is the whole `ncols=3` grid on a single page,
+   * because that is the figure seegprep produces and matching it was the point.
+   */
+  const doExportReslice = async (
+    pdfPath: string,
+    pngPath: string | null
+  ): Promise<QcOutcome> => {
     if (typeof OffscreenCanvas === 'undefined') {
       return qcFailed('this host has no OffscreenCanvas, so a figure cannot be composed');
     }
@@ -1795,89 +1890,72 @@ export function createModel(host: ModuleHost): SeegModel {
       if (tiles.length === 0) {
         return qcFailed('no electrode has the two contacts a reslice plane needs');
       }
-      const pages: PdfPage[] = [];
-      for (const tile of tiles) pages.push(await resliceTilePage(tile));
-      const bytes = buildPdf(pages, { title: 'sEEG per-electrode reslice QC' });
-      const written = await host.files.writeBinary(path, bytes, { backup: true });
-      return written.ok
-        ? { ok: true, detail: `${tiles.length} pages → ${baseNameOf(path)}` }
-        : qcFailed(written.error);
+      const size = resliceLayout(tiles);
+      const figure = figureCanvas(size.width, size.height);
+      drawResliceFigure(figure.ctx, tiles, figure.drawImage, figure.measure);
+      return await writeFigure(
+        figure.canvas,
+        pdfPath,
+        pngPath,
+        `${tiles.length} electrode${tiles.length === 1 ? '' : 's'}`
+      );
     } catch (error: unknown) {
       return qcFailed(reasonOf(error));
     }
   };
 
   /**
-   * The 3-D implant report — the four views tiled with the legend, on one page.
-   * `captureImplant3dViews` (`qc/implant3d.ts`) owns the setView/screenshot sequence; `degraded` is
-   * surfaced as a toast rather than a failure, because one view is still a figure.
+   * The volume the glass brain is built from, and which labels count as brain.
+   *
+   * A SimNIBS tissue map, when one is open, gives seegprep's own `brain_labels=(1, 2)`; otherwise the
+   * T1 with an Otsu cut, which is the fallback the figure degrades to. The CT is never used — bone
+   * and metal dominate it, and the silhouette would be a skull.
    */
-  const doExportImplant3dPdf = async (path: string): Promise<QcOutcome> => {
+  const brainSource = (): { id: string; labels: readonly number[] | undefined } | null => {
+    const open = host.scene.datasets().filter((d) => d.kind === 'volume');
+    const tissue = open.find((d) => /final_tissues|tissue|labelling/i.test(d.path ?? d.name));
+    if (tissue !== undefined) return { id: tissue.id, labels: [1, 2] };
+    const t1 = open.find((d) => d.path === t1Path);
+    return t1 === undefined ? null : { id: t1.id, labels: undefined };
+  };
+
+  /**
+   * The 3-D implant figure — seegprep's `implant_3d`: four glass-brain views, the legend, one page.
+   *
+   * Rendered from geometry (`qc/implant3d.ts`), not screenshotted: the app's 3-D view can never look
+   * like a pyvista glass brain, and 1:1 was the requirement. Without a volume to build a brain from,
+   * the leads are still drawn and the figure says so through a toast.
+   */
+  const doExportImplant3d = async (
+    pdfPath: string,
+    pngPath: string | null
+  ): Promise<QcOutcome> => {
     if (typeof OffscreenCanvas === 'undefined') {
       return qcFailed('this host has no OffscreenCanvas, so a figure cannot be composed');
     }
     try {
-      const { tiles, degraded } = await captureImplant3dViews(host.capture, { background: 'theme' });
-      if (degraded) {
+      const leads = buildLeads(set);
+      if (leads.length === 0) return qcFailed('there are no contacts to draw');
+      const source = brainSource();
+      let mask: BrainMask | null = null;
+      if (source === null) {
         host.ui.toast(
           'warn',
-          'sEEG: this host has no camera control yet, so only the current 3-D view was captured.'
+          'sEEG: no T1 or tissue volume is open, so the implant figure has no brain behind it.'
         );
+      } else {
+        const raw = await buildBrainMask(
+          host,
+          source.id,
+          set.contacts.map((c) => c.position),
+          source.labels === undefined ? {} : { labels: source.labels }
+        );
+        mask = raw === null ? null : centerMask(raw, set);
       }
-      const bitmaps = await Promise.all(
-        tiles.map(async (tile) => ({
-          label: tile.label,
-          bitmap: await createImageBitmap(new Blob([tile.png.slice()])),
-        }))
-      );
-      const tileW = 640;
-      const tileH = 560;
-      const columns = Math.min(2, Math.max(1, bitmaps.length));
-      const rows = Math.ceil(bitmaps.length / columns);
-      const legend = legendOf(set.groups);
-      const canvas = new OffscreenCanvas(tileW * columns, tileH * rows + legend.length * 28 + 48);
-      const ctx = canvas.getContext('2d');
-      if (ctx === null) throw new Error('this host would not give a 2-D canvas context');
-      // JPEG has no alpha, so the page is painted first: an unpainted canvas encodes as black and
-      // the legend is drawn in white.
-      ctx.fillStyle = '#111111';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      compositeImplant3d(ctx, bitmaps, legend, tileW, tileH);
-      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
-      const jpeg = new Uint8Array(await blob.arrayBuffer());
-
-      // Landscape, because four tiled views are wider than they are tall.
-      const pageWidth = PAGE_HEIGHT_PT;
-      const pageHeight = PAGE_WIDTH_PT;
-      const boxWidth = pageWidth - 2 * PAGE_MARGIN_PT;
-      const boxHeight = pageHeight - 2 * PAGE_MARGIN_PT - 20;
-      const fit = Math.min(boxWidth / canvas.width, boxHeight / canvas.height);
-      const caption = `sEEG implant, ${set.groups.length} electrodes, ${set.contacts.length} contacts`;
-      const bytes = buildPdf(
-        [
-          {
-            widthPt: pageWidth,
-            heightPt: pageHeight,
-            jpeg,
-            imageWidthPx: canvas.width,
-            imageHeightPx: canvas.height,
-            imageRect: {
-              x: (pageWidth - canvas.width * fit) / 2,
-              y: PAGE_MARGIN_PT,
-              width: canvas.width * fit,
-              height: canvas.height * fit,
-            },
-            text: [
-              { x: PAGE_MARGIN_PT, y: pageHeight - PAGE_MARGIN_PT, sizePt: 12, value: caption },
-            ],
-          },
-        ],
-        { title: 'sEEG 3-D implant QC' }
-      );
-      const written = await host.files.writeBinary(path, bytes, { backup: true });
-      return written.ok
-        ? { ok: true, detail: `${tiles.length} views → ${baseNameOf(path)}` }
-        : qcFailed(written.error);
+      const size = implantFigureSize();
+      const figure = figureCanvas(size.width, size.height);
+      drawImplantFigure(figure.ctx, leads, mask === null ? null : brainSurface(mask), figure.drawImage, figure.measure);
+      return await writeFigure(figure.canvas, pdfPath, pngPath, '4 views');
     } catch (error: unknown) {
       return qcFailed(reasonOf(error));
     }
@@ -1905,12 +1983,14 @@ export function createModel(host: ModuleHost): SeegModel {
       }
     }
     const results: Record<string, QcOutcome> = {};
-    if (opts.reslice) results['reslice'] = await doExportReslicePdf(targets.reslicePdf);
+    if (opts.reslice) {
+      results['reslice'] = await doExportReslice(targets.reslicePdf, targets.reslicePng);
+    }
     if (opts.implant3d) {
       results['implant3d'] =
         targets.implant3dPdf === null
           ? qcFailed('the Save sheet admitted no second path for the 3-D figure')
-          : await doExportImplant3dPdf(targets.implant3dPdf);
+          : await doExportImplant3d(targets.implant3dPdf, targets.implant3dPng);
     }
     const ok = Object.values(results).filter((r) => r.ok).length;
     const total = Object.keys(results).length;
@@ -2537,6 +2617,8 @@ export function createModel(host: ModuleHost): SeegModel {
         qcAdmitted = {
           reslicePdf,
           implant3dPdf: `${writtenIn}${implant3dBesideReslice(baseNameOf(reslicePdf))}`,
+          reslicePng: `${writtenIn}${pngBesideReslice(baseNameOf(reslicePdf)).reslice}`,
+          implant3dPng: `${writtenIn}${pngBesideReslice(baseNameOf(reslicePdf)).implant3d}`,
           // No sheet ran, so no `{derivatives}` root was resolved and nothing admits the sidecar.
           datasetDescription: null,
         };

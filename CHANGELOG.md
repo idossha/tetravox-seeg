@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.2.2 — 2026-09-03
+
+- **The QC figures now look like seegprep's.** Both exports were rebuilt to match the figures
+  `seegprep` writes into `derivatives/seegprep/sub-<id>/ieeg/figures/`, so a subject's Tetravox QC
+  and its seegprep QC can be put side by side and read the same way. The reslice figure is the
+  familiar three-across grid of oblique panels — T1 in grey windowed to its 2nd–99th percentile, CT
+  metal from 1200 to 3000 HU in the warm `autumn` ramp over it, millimetre axes labelled *along
+  shaft* and *perp*, a panel per electrode titled with its contact count. The 3-D figure is the
+  glass-brain overview: four views (superior, left, right, anterior) tiled 2×2 over a translucent
+  brain, every lead a coloured tube with a sphere at each contact, and the legend underneath.
+
+- **Two things are new, and they are the only differences.** Each contact ring is drawn in **its own
+  electrode's colour** — the colour that electrode has in the app — instead of the single cyan
+  seegprep uses, so a panel tells you which lead you are looking at without reading the title. And
+  the **3-D distance between each pair of neighbouring contacts** is printed in millimetres between
+  their rings, in the same colour: the true centre-to-centre distance in the head, not the shorter
+  one the flat picture would suggest for a lead that leans out of its own plane.
+
+- **Each figure is written twice, as a PDF and as a PNG** — `sub-<id>_desc-reslice_qc.pdf` beside
+  `sub-<id>_desc-reslice_qc.png`, and the same pair for `implant3d`. The PNG carries the same pixels
+  under seegprep's own filename, so the two derivatives sit in the same folder shape; the PDF is the
+  printable copy. One Save sheet still admits all of them, and the reslice report is now one page
+  holding the whole grid rather than one page per electrode.
+
+- **The 3-D figure is a real glass brain.** The brain surface is built with marching cubes from the
+  SimNIBS tissue map (or the T1), smoothed the way seegprep smooths its own, and drawn as translucent
+  triangles from back to front — so gyri, sulci, the cerebellum and the brainstem are all there, the
+  two hemispheres overlap into a denser grey where they cross, and the leads read at full colour in
+  front of it. The camera frames each view the way seegprep's does, so all four show the whole brain
+  at one scale.
+
+- **The gap distances are readable.** seegprep's own annotation size is too small to read over bright
+  metal; the distance is printed a little larger with a white outline behind it, still between the
+  two rings it measures.
+
+- **The 3-D figure no longer photographs your screen.** It used to swing the app's 3-D view through
+  four camera presets and take a screenshot of each, which meant the figure showed the app — its
+  background, its slice planes, its glyphs — and left your camera pointing at the superior preset
+  afterwards. It is now drawn from the contacts and a brain mask sampled out of the open T1 (or the
+  SimNIBS tissue map, when one is loaded), so **your 3-D view is left exactly where you had it** and
+  the figure looks the same whatever the app is showing.
+
 ## 0.2.1 — 2026-09-03
 
 Requires Tetravox 0.3.6 or newer: the PDF exports need a host that accepts a `.pdf` from an extension.

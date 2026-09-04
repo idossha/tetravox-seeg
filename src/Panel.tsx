@@ -847,14 +847,14 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
       data-testid="seeg-qc-export"
       className="flex flex-col gap-1 border-t border-tvx-line pt-1.5"
     >
-      <div className="text-tvx-dim">QC export (PDF)</div>
+      <div className="text-tvx-dim">QC export (PDF + PNG)</div>
       <label className="flex items-center gap-1.5">
         <input
           type="checkbox"
           checked={reslice}
           onChange={(e: { target: { checked: boolean } }) => setReslice(e.target.checked)}
         />
-        Per-electrode reslice — one page each
+        Per-electrode reslice — small multiples
       </label>
       <label className="flex items-center gap-1.5">
         <input
@@ -879,7 +879,7 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
           data-testid="seeg-qc-export-choose-folder"
           className="tvx-btn"
           disabled={busy}
-          title="Choose where the two PDFs go. Asked once per table otherwise."
+          title="Choose where the figures go. Asked once per table otherwise."
           onClick={() => runExport(true)}
         >
           Export to…
