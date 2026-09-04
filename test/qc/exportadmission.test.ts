@@ -225,6 +225,7 @@ function stubOffscreenCanvas(): { restore: () => void } {
     strokeRect: () => undefined,
     fillRect: () => undefined,
     fillText: () => undefined,
+    strokeText: () => undefined,
     imageSmoothingEnabled: false,
     lineWidth: 1,
     textAlign: '',

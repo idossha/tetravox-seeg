@@ -10,11 +10,11 @@
  * a coloured tube with sphere contacts, under an orthographic camera per view.
  *
  * **The renderer.** seegprep uses VTK: marching cubes, Taubin smoothing, three-light shading,
- * per-fragment depth. This is a splat-and-depth-buffer stand-in — each brain voxel is projected to a
- * screen-space square, the front and back depths are kept per pixel, and the surface normal comes
- * from the gradient of that front-depth map. It reproduces the *look* (a soft grey translucent shell
- * with the leads showing through) and not the surface: a mask sampled at {@link BRAIN_STEP_MM} has
- * no gyral detail, and the silhouette is that of the mask, not of a smoothed isosurface.
+ * per-fragment depth. All four are here — `qc/isosurface.ts` builds and smooths the surface and this
+ * file rasterises it as back-to-front translucent triangles, so gyri and the overlapping hemispheres
+ * read as they do in the reference. The remaining differences are the mask's own resolution
+ * ({@link BRAIN_STEP_MM}) and the painter's-algorithm ordering, which is per triangle rather than
+ * per fragment.
  *
  * Everything a number can fix is seegprep's: {@link IMPLANT_PALETTE}, the brain colour and opacity,
  * the tube and contact radii, the four view directions, `zoom = 1.4`, the 2×2 grid, the capitalised
@@ -23,6 +23,7 @@
 
 import type { vec3 } from '@tetravox/module-sdk';
 import { type Ctx2D } from './mpl';
+import { meshBounds, type Mesh } from './isosurface';
 
 /**
  * `_IMPLANT_PALETTE`, copied verbatim from `seegprep/reports/style.py`'s neighbour in
@@ -58,15 +59,13 @@ export const BRAIN_OPACITY = 0.14;
 /** `pl.camera.zoom(1.4)` after `reset_camera`. */
 export const ZOOM = 1.4;
 /**
- * How much wider than the fitted bounding sphere the panel actually is, measured off seegprep's own
- * `sub-P076_desc-implant3d_qc.png`: the brain spans ~55% of a panel's width there, and a plain
- * `bounding sphere / zoom` fit puts it at ~66%. The remainder is VTK's default view-angle padding
- * plus the pyvista window being imshow'd into a differently-shaped axes — neither of which this
- * renderer has. Calibrated against that file rather than derived, and named so.
+ * How finely the brain mask is sampled for the isosurface, in millimetres.
+ *
+ * 1.4 mm over a brain-sized box is ~1.5 M points, inside `sampleVolume`'s 2 M cap, and gives the
+ * marching cubes enough grid to carry gyri; `buildBrainMask` finds that box with a coarse first pass
+ * rather than sampling the padded one.
  */
-export const FIT_MARGIN = 1.1;
-/** How coarsely the brain mask is sampled, in millimetres. See the header on what this costs. */
-export const BRAIN_STEP_MM = 2.0;
+export const BRAIN_STEP_MM = 1.4;
 
 /**
  * A view's screen basis in RAS millimetres: `right` runs left-to-right across the panel, `up` runs
@@ -210,24 +209,28 @@ export function fitCamera(
   zoom = ZOOM
 ): Camera {
   const basis = VIEW_BASIS[view];
-  let center: vec3 = [0, 0, 0];
-  if (points.length > 0) {
-    for (const p of points) {
-      center[0] += p[0];
-      center[1] += p[1];
-      center[2] += p[2];
-    }
-    center = [center[0] / points.length, center[1] / points.length, center[2] / points.length];
+  // The **bounds** centre and half-diagonal, which is what `vtkRenderer::ResetCamera` uses — not the
+  // centroid of the points. With a centroid, a hundred contacts clustered in one lobe drag the focal
+  // point off the brain's middle and inflate the radius, which framed the brain 30% small and
+  // off-centre in exactly the two views the implant is densest in.
+  if (points.length === 0) {
+    return { basis, center: [0, 0, 0], mmPerPx: 1 / zoom, width, height };
   }
-  let radius = 1;
+  const lo: vec3 = [Infinity, Infinity, Infinity];
+  const hi: vec3 = [-Infinity, -Infinity, -Infinity];
   for (const p of points) {
-    const d = sub(p, center);
-    radius = Math.max(radius, Math.hypot(d[0], d[1], d[2]));
+    for (let c = 0; c < 3; c += 1) {
+      if ((p[c] as number) < (lo[c] as number)) lo[c] = p[c] as number;
+      if ((p[c] as number) > (hi[c] as number)) hi[c] = p[c] as number;
+    }
   }
-  // VTK's `reset_camera` fits the scene's bounding **sphere** to the shorter viewport dimension, and
-  // `camera.zoom(1.4)` then magnifies by 1.4 — the sphere being wider than the projection is exactly
-  // what leaves the brain filling the panel with a small margin, as in the reference figure.
-  const mmPerPx = ((2 * radius) / Math.min(width, height) / zoom) * FIT_MARGIN;
+  const center: vec3 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+  const radius = Math.max(
+    1,
+    Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2
+  );
+  // Fitted to the shorter viewport dimension, then magnified by `camera.zoom(1.4)`.
+  const mmPerPx = (2 * radius) / Math.min(width, height) / zoom;
   return { basis, center, mmPerPx, width, height };
 }
 
@@ -353,188 +356,145 @@ function drawTube(panel: Panel, cam: Camera, a: vec3, b: vec3, radiusMm: number,
   }
 }
 
-/** A separable box blur over the finite entries of a depth map, in place. */
-function blurDepth(depth: Float32Array, width: number, height: number, radius: number): void {
-  const tmp = new Float32Array(depth.length);
-  const pass = (src: Float32Array, dst: Float32Array, stride: number, count: number, runs: number): void => {
-    for (let r = 0; r < runs; r += 1) {
-      const base = r * (stride === 1 ? width : 1);
-      for (let i = 0; i < count; i += 1) {
-        const at = base + i * stride;
-        if (!Number.isFinite(src[at] as number)) {
-          dst[at] = src[at] as number;
-          continue;
-        }
-        let sum = 0;
-        let n = 0;
-        for (let k = -radius; k <= radius; k += 1) {
-          const j = i + k;
-          if (j < 0 || j >= count) continue;
-          const v = src[base + j * stride] as number;
-          if (Number.isFinite(v)) {
-            sum += v;
-            n += 1;
-          }
-        }
-        dst[at] = n === 0 ? (src[at] as number) : sum / n;
-      }
-    }
-  };
-  pass(depth, tmp, 1, width, height);
-  pass(tmp, depth, width, height, width);
-}
-
 /**
- * Splats the brain mask into a front-depth and back-depth buffer, then composites it as a
- * translucent shell over whatever the panel already holds.
+ * The brain, rasterised as translucent triangles, back to front.
  *
- * Two crossings of a `BRAIN_OPACITY` shell give `1 - (1 - a)²` of coverage, which is what a
- * translucent closed surface looks like in VTK; the front surface is shaded and the back is not, so
- * the silhouette reads as a volume rather than a flat wash. An electrode nearer than the front
- * surface is left alone — it is in front of the glass, not behind it.
+ * This is what a point splat could not do. Each triangle is filled at {@link BRAIN_OPACITY} with
+ * smooth three-light shading from interpolated vertex normals, and because the far surface is drawn
+ * first, the near one composites *over* it: the two hemispheres overlap into a denser grey, sulci
+ * read as darker creases, and gyri stand out — the look of the reference figure.
+ *
+ * Sorting is by the triangle centroid's depth. That is the standard painter's-algorithm
+ * approximation and it is wrong for interpenetrating triangles; an isosurface has none, so the only
+ * artefacts are at near-coincident facets, where the two orderings differ by less than the
+ * per-triangle alpha.
  */
-function compositeBrain(panel: Panel, cam: Camera, mask: BrainMask): void {
-  const n = panel.width * panel.height;
-  const front = new Float32Array(n).fill(Infinity);
-  const back = new Float32Array(n).fill(-Infinity);
-  const [nx, ny, nz] = mask.dims;
-  const half = Math.max(1, Math.round(mask.step / cam.mmPerPx / 2));
-  for (let k = 0; k < nz; k += 1) {
-    for (let j = 0; j < ny; j += 1) {
-      const row = (k * ny + j) * nx;
-      for (let i = 0; i < nx; i += 1) {
-        if ((mask.data[row + i] as number) === 0) continue;
-        const p: vec3 = [
-          mask.origin[0] + i * mask.step,
-          mask.origin[1] + j * mask.step,
-          mask.origin[2] + k * mask.step,
-        ];
-        const s = project(cam, p);
-        const cx = Math.round(s.x);
-        const cy = Math.round(s.y);
-        for (let y = cy - half; y <= cy + half; y += 1) {
-          if (y < 0 || y >= panel.height) continue;
-          for (let x = cx - half; x <= cx + half; x += 1) {
-            if (x < 0 || x >= panel.width) continue;
-            const idx = y * panel.width + x;
-            if (s.z < (front[idx] as number)) front[idx] = s.z;
-            if (s.z > (back[idx] as number)) back[idx] = s.z;
-          }
+function drawMeshTranslucent(
+  panel: Panel,
+  cam: Camera,
+  mesh: Mesh,
+  normals: Float32Array,
+  rgb: [number, number, number],
+  alpha: number
+): void {
+  const tri = mesh.indices;
+  const count = tri.length / 3;
+  if (count === 0) return;
+  const p = mesh.positions;
+  // Project every vertex once; the rasteriser then works in screen space.
+  const n = p.length / 3;
+  const sx = new Float32Array(n);
+  const sy = new Float32Array(n);
+  const sz = new Float32Array(n);
+  for (let v = 0; v < n; v += 1) {
+    const q = project(cam, [p[v * 3] as number, p[v * 3 + 1] as number, p[v * 3 + 2] as number]);
+    sx[v] = q.x;
+    sy[v] = q.y;
+    sz[v] = q.z;
+  }
+  // Shade per vertex, in camera space: `right`/`up`/`-forward` is the camera basis, and `-forward`
+  // points at the viewer.
+  const shade = new Float32Array(n);
+  const b = cam.basis;
+  for (let v = 0; v < n; v += 1) {
+    const nx = normals[v * 3] as number;
+    const ny = normals[v * 3 + 1] as number;
+    const nz = normals[v * 3 + 2] as number;
+    const cx = nx * b.right[0] + ny * b.right[1] + nz * b.right[2];
+    const cy = nx * b.up[0] + ny * b.up[1] + nz * b.up[2];
+    const cz = -(nx * b.forward[0] + ny * b.forward[1] + nz * b.forward[2]);
+    // A translucent shell is lit from both sides — a back-facing facet still scatters light — so the
+    // normal is folded toward the viewer rather than being culled.
+    shade[v] = threeLightShade(cx, cy, Math.abs(cz), 0.15);
+  }
+
+  const order = new Uint32Array(count);
+  const depth = new Float32Array(count);
+  for (let t = 0; t < count; t += 1) {
+    order[t] = t;
+    depth[t] =
+      ((sz[tri[t * 3] as number] as number) +
+        (sz[tri[t * 3 + 1] as number] as number) +
+        (sz[tri[t * 3 + 2] as number] as number)) /
+      3;
+  }
+  // Far first: a larger depth is farther from the camera (see `project`).
+  const sorted = Array.from(order).sort((a, c) => (depth[c] as number) - (depth[a] as number));
+
+  for (const t of sorted) {
+    const i0 = tri[t * 3] as number;
+    const i1 = tri[t * 3 + 1] as number;
+    const i2 = tri[t * 3 + 2] as number;
+    const x0 = sx[i0] as number;
+    const y0 = sy[i0] as number;
+    const x1 = sx[i1] as number;
+    const y1 = sy[i1] as number;
+    const x2 = sx[i2] as number;
+    const y2 = sy[i2] as number;
+    const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (area === 0) continue;
+    const inv = 1 / area;
+    const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
+    const maxX = Math.min(panel.width - 1, Math.ceil(Math.max(x0, x1, x2)));
+    const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2)));
+    const maxY = Math.min(panel.height - 1, Math.ceil(Math.max(y0, y1, y2)));
+    if (minX > maxX || minY > maxY) continue;
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const px = x + 0.5;
+        const py = y + 0.5;
+        // Barycentric coordinates; the same sign test on all three admits either winding, which the
+        // fold-toward-viewer shading above makes correct for a two-sided shell.
+        const w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) * inv;
+        const w1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) * inv;
+        const w2 = 1 - w0 - w1;
+        if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+        const idx = y * panel.width + x;
+        const s =
+          w0 * (shade[i0] as number) + w1 * (shade[i1] as number) + w2 * (shade[i2] as number);
+        for (let c = 0; c < 3; c += 1) {
+          const at = idx * 3 + c;
+          const lit = Math.min(255, (rgb[c] as number) * s);
+          panel.rgb[at] = (panel.rgb[at] as number) * (1 - alpha) + lit * alpha;
         }
       }
     }
   }
-
-  // Blur the front depths before the normals are taken. The splat quantises depth to the voxel step,
-  // and the gradient of that terraced surface draws the mask's own sample grid across the brain as a
-  // hatch of light and dark lines. The blur radius follows the splat, so the terraces disappear
-  // while the silhouette does not move.
-  blurDepth(front, panel.width, panel.height, Math.max(2, half * 2));
-  blurDepth(front, panel.width, panel.height, Math.max(2, half));
-
-  // A gyrified surface is crossed several times by a ray, not twice: `1 - (1 - a)^4` is what makes
-  // the shell as visibly grey as the reference figure's rather than a whisper over white.
-  const coverage = 1 - (1 - BRAIN_OPACITY) ** 4;
-  for (let y = 0; y < panel.height; y += 1) {
-    for (let x = 0; x < panel.width; x += 1) {
-      const idx = y * panel.width + x;
-      const zf = front[idx] as number;
-      if (!Number.isFinite(zf)) continue;
-      // The normal of the front-depth map: depth rises away from the camera, so the screen-space
-      // gradient of `front` is the surface tilt, and the remainder points at the viewer.
-      const zl = front[idx - (x > 0 ? 1 : 0)] as number;
-      const zr = front[idx + (x < panel.width - 1 ? 1 : 0)] as number;
-      const zu = front[idx - (y > 0 ? panel.width : 0)] as number;
-      const zd = front[idx + (y < panel.height - 1 ? panel.width : 0)] as number;
-      const gx = Number.isFinite(zl) && Number.isFinite(zr) ? (zr - zl) / (2 * cam.mmPerPx) : 0;
-      const gy = Number.isFinite(zu) && Number.isFinite(zd) ? (zd - zu) / (2 * cam.mmPerPx) : 0;
-      const inv = 1 / Math.hypot(gx, gy, 1);
-      const shade = threeLightShade(-gx * inv, gy * inv, inv, 0.15);
-      const alpha = coverage;
-      const dz = panel.depth[idx] as number;
-      // Only the part of the shell in front of the opaque geometry tints it.
-      const a = dz < zf ? 0 : alpha;
-      for (let c = 0; c < 3; c += 1) {
-        const brain = Math.min(255, (BRAIN_COLOR[c] as number) * shade);
-        const at = idx * 3 + c;
-        panel.rgb[at] = (panel.rgb[at] as number) * (1 - a) + brain * a;
-      }
-    }
-  }
-}
-
-/**
- * Six points on the mask's own bounding **sphere** — its occupied centroid plus and minus the
- * farthest occupied voxel's distance, along each axis.
- *
- * A sphere and not the occupied box: a box's corner sits well outside a brain, and fitting the box
- * corners renders the brain a third smaller than VTK's `reset_camera`, which fits the mesh's
- * vertices. These six points give {@link fitCamera} the same radius from a mask.
- */
-export function occupiedSphere(mask: BrainMask): vec3[] {
-  const [nx, ny, nz] = mask.dims;
-  let count = 0;
-  const centre: vec3 = [0, 0, 0];
-  const each = (fn: (p: vec3) => void): void => {
-    for (let k = 0; k < nz; k += 1) {
-      for (let j = 0; j < ny; j += 1) {
-        const row = (k * ny + j) * nx;
-        for (let i = 0; i < nx; i += 1) {
-          if ((mask.data[row + i] as number) === 0) continue;
-          fn([
-            mask.origin[0] + i * mask.step,
-            mask.origin[1] + j * mask.step,
-            mask.origin[2] + k * mask.step,
-          ]);
-        }
-      }
-    }
-  };
-  each((p) => {
-    centre[0] += p[0];
-    centre[1] += p[1];
-    centre[2] += p[2];
-    count += 1;
-  });
-  if (count === 0) return [];
-  for (let c = 0; c < 3; c += 1) centre[c] = (centre[c] as number) / count;
-  let radius = mask.step;
-  each((p) => {
-    const d = sub(p, centre);
-    radius = Math.max(radius, Math.hypot(d[0], d[1], d[2]));
-  });
-  return [
-    [centre[0] + radius, centre[1], centre[2]],
-    [centre[0] - radius, centre[1], centre[2]],
-    [centre[0], centre[1] + radius, centre[2]],
-    [centre[0], centre[1] - radius, centre[2]],
-    [centre[0], centre[1], centre[2] + radius],
-    [centre[0], centre[1], centre[2] - radius],
-  ];
 }
 
 /**
  * One view, rendered into an RGBA buffer over white.
  *
- * Draw order is geometry first, glass second, which is what makes the leads show *through* the
- * brain instead of being clipped by it.
+ * The brain is drawn first and the leads over it, so a lead reads at its own colour rather than
+ * dimmed through the glass — which is how the reference figure reads, and the opposite of what a
+ * physically-ordered composite would give.
  */
 export function renderImplantView(
   view: Implant3dView,
   leads: readonly Lead[],
-  mask: BrainMask | null,
+  brain: { mesh: Mesh; normals: Float32Array } | null,
   width: number,
   height: number
 ): Uint8ClampedArray {
   const all: vec3[] = [];
   for (const lead of leads) all.push(...lead.points);
-  if (mask !== null) {
-    // The occupied bounding **sphere**, not the sampled grid: the grid is padded well past the head,
-    // and fitting either the padding or the box corners shrinks the brain well below seegprep's.
-    for (const p of occupiedSphere(mask)) all.push(p);
+  if (brain !== null) {
+    const bounds = meshBounds(brain.mesh);
+    if (bounds !== null) {
+      // VTK's `ResetCamera` frames the **bounds**, so the camera is fitted to their eight corners
+      // and then magnified by `zoom`. Nothing is calibrated against a reference image any more.
+      for (const x of [bounds.lo[0], bounds.hi[0]]) {
+        for (const y of [bounds.lo[1], bounds.hi[1]]) {
+          for (const z of [bounds.lo[2], bounds.hi[2]]) all.push([x, y, z]);
+        }
+      }
+    }
   }
   const cam = fitCamera(all, view, width, height);
   const panel = newPanel(width, height);
+  if (brain !== null) {
+    drawMeshTranslucent(panel, cam, brain.mesh, brain.normals, BRAIN_COLOR, BRAIN_OPACITY);
+  }
   for (const lead of leads) {
     const rgb = hexRgb(lead.color);
     for (let i = 1; i < lead.points.length; i += 1) {
@@ -542,7 +502,6 @@ export function renderImplantView(
     }
     for (const p of lead.points) drawSphere(panel, cam, p, CONTACT_RADIUS_MM, rgb);
   }
-  if (mask !== null) compositeBrain(panel, cam, mask);
   const out = new Uint8ClampedArray(width * height * 4);
   for (let i = 0; i < width * height; i += 1) {
     out[i * 4] = panel.rgb[i * 3] as number;
@@ -567,27 +526,40 @@ export function drawImplantLegend(
   if (entries.length === 0) return;
   const ncol = 6;
   const rows = Math.ceil(entries.length / ncol);
-  const rowHeight = opts.fontPx * 1.9;
-  const markerRadius = opts.fontPx * 0.45;
-  const gap = opts.fontPx * 1.4;
+  const rowHeight = opts.fontPx * 2.4;
+  const markerRadius = opts.fontPx * 0.42;
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
+  // matplotlib's legend lays its columns on a **common pitch** — every column is as wide as the
+  // widest entry in it — so the labels line up down the two rows. Sizing each cell to its own text
+  // (what this did) made the reference's tidy grid read as a ragged run of words.
+  const cellWidth: number[] = [];
+  for (let c = 0; c < ncol; c += 1) {
+    let widest = 0;
+    for (let row = 0; row < rows; row += 1) {
+      const entry = entries[row * ncol + c];
+      if (entry !== undefined) widest = Math.max(widest, opts.measure(entry.name));
+    }
+    cellWidth.push(widest === 0 ? 0 : markerRadius * 2 + opts.fontPx * 0.8 + widest + opts.fontPx * 2.2);
+  }
+  const total = cellWidth.reduce((a, b) => a + b, 0);
+  const left = (figureWidthPx - total) / 2;
   for (let row = 0; row < rows; row += 1) {
-    const inRow = entries.slice(row * ncol, row * ncol + ncol);
-    const widths = inRow.map((e) => markerRadius * 2 + opts.fontPx * 0.6 + opts.measure(e.name));
-    const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, inRow.length - 1);
-    let x = (figureWidthPx - total) / 2;
     const y = bottomPx - (rows - row - 0.5) * rowHeight;
-    inRow.forEach((entry, i) => {
-      ctx.fillStyle = entry.color;
-      ctx.beginPath();
-      ctx.arc(x + markerRadius, y, markerRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#000000';
-      ctx.fillText(entry.name, x + markerRadius * 2 + opts.fontPx * 0.6, y);
-      x += (widths[i] as number) + gap;
-    });
+    let x = left;
+    for (let c = 0; c < ncol; c += 1) {
+      const entry = entries[row * ncol + c];
+      if (entry !== undefined) {
+        ctx.fillStyle = entry.color;
+        ctx.beginPath();
+        ctx.arc(x + markerRadius, y, markerRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000000';
+        ctx.fillText(entry.name, x + markerRadius * 2 + opts.fontPx * 0.8, y);
+      }
+      x += cellWidth[c] as number;
+    }
   }
   ctx.restore();
 }

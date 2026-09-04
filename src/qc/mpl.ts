@@ -45,6 +45,7 @@ export interface Ctx2D {
   fillRect(x: number, y: number, w: number, h: number): void;
   strokeRect(x: number, y: number, w: number, h: number): void;
   fillText(text: string, x: number, y: number): void;
+  strokeText(text: string, x: number, y: number): void;
   drawImage(image: never, dx: number, dy: number, dw: number, dh: number): void;
 }
 

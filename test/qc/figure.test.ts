@@ -14,16 +14,22 @@ import { HAS_CONTACTS } from '../setup';
 import {
   CT_ALPHA,
   CT_METAL_HU,
+  DISTANCE_LABEL_PT,
   RESLICE_SUPTITLE,
   buildResliceTiles,
   drawImplantFigure,
   drawResliceFigure,
+  COLUMN_PITCH_PX,
+  EDGE_MARGIN_PX,
+  ROW_PITCH_PX,
+  TOP_BAND_PX,
   resliceFigureSize,
+  resliceLayout,
   resliceTileImage,
   type ExportHost,
   type ResliceTile,
 } from '../../src/qc/export';
-import { autumnLut, DPI, grayLut, pt, type Ctx2D } from '../../src/qc/mpl';
+import { autumnLut, grayLut, pt, type Ctx2D } from '../../src/qc/mpl';
 import { paletteColor, type Lead } from '../../src/qc/implant3d';
 
 /** A recording `Ctx2D`: every call, and the style in force when it was made. */
@@ -72,6 +78,7 @@ function spyCtx(): { ctx: Ctx2D; calls: Array<{ op: string; args: unknown[]; sty
     fillRect: vi.fn(),
     strokeRect: record('strokeRect', 'strokeStyle'),
     fillText: record('fillText', 'fillStyle'),
+    strokeText: record('strokeText', 'strokeStyle'),
     drawImage: vi.fn(),
   } as unknown as Ctx2D;
   return { ctx, calls };
@@ -171,6 +178,19 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
     expect(image.data[px + 2]).toBe(Math.round((gr as number) * (1 - CT_ALPHA) + cb * CT_ALPHA));
   });
 
+  it('gives a row more than the reference pitch only when its own panels need it', async () => {
+    const host = mockHost();
+    const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', t1DatasetId: 't1' });
+    const layout = resliceLayout(tiles);
+    expect(layout.boxes).toHaveLength(tiles.length);
+    // One short lead: `aspect="equal"` makes its box taller than seegprep's 358 px row pitch, so the
+    // row grows rather than clipping the tick labels off the bottom of the canvas.
+    const box = layout.boxes[0] as { height: number };
+    expect(layout.height).toBeGreaterThanOrEqual(TOP_BAND_PX + ROW_PITCH_PX + EDGE_MARGIN_PX);
+    expect(box.height).toBeGreaterThan(0);
+    expect(layout.boxes.every((b) => b.width === 716)).toBe(true);
+  });
+
   it('draws the rings and the 3-D gap text in the electrode colour, and the tip square in lime', async () => {
     const host = mockHost();
     const tiles = await buildResliceTiles(host, mockSet(), { ctDatasetId: 'ct', t1DatasetId: 't1' });
@@ -193,9 +213,13 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
     // Change 2: one distance per gap, "%.1f", in the electrode colour at fontsize 4.5.
     const distances = calls.filter((c) => c.op === 'fillText' && c.style === GROUP_CSS);
     expect(distances).toHaveLength(LEAD.length - 1);
+    // Each one is haloed: a white strokeText under the coloured fill, so the number stays readable
+    // over a metal-bright panel.
+    const haloes = calls.filter((c) => c.op === 'strokeText' && c.style === '#ffffff');
+    expect(haloes).toHaveLength(LEAD.length - 1);
     for (const d of distances) {
       expect(d.args[0]).toBe('3.5');
-      expect(d.font).toContain(`${pt(4.5)}px`);
+      expect(d.font).toContain(`${pt(DISTANCE_LABEL_PT)}px`);
     }
 
     // The suptitle and every panel's axis labels are on the figure.
@@ -207,15 +231,23 @@ describe.skipIf(!HAS_CONTACTS)('the reslice figure', () => {
     expect(drawImage).toHaveBeenCalledTimes(1);
   });
 
-  it("sizes the canvas from seegprep's figsize: 6.2 x 3.0 inches per panel, ncols=3", () => {
+  it("sizes the canvas from seegprep's laid-out geometry, not its figsize", () => {
+    // `figsize` is 6.2 x 3.0 in per panel, but `tight_layout` + `bbox="tight"` emit a 799 x 358 px
+    // pitch — measured on seegprep's own PNG, and what the export has to match to overlay.
     const one = resliceFigureSize(1);
     expect(one.ncols).toBe(1);
-    expect(one.width).toBe(Math.round(6.2 * DPI));
+    expect(one.width).toBe(EDGE_MARGIN_PX + COLUMN_PITCH_PX);
     const seven = resliceFigureSize(7);
     expect(seven.ncols).toBe(3);
     expect(seven.nrows).toBe(3);
-    expect(seven.width).toBe(Math.round(6.2 * 3 * DPI));
+    expect(seven.width).toBe(EDGE_MARGIN_PX + COLUMN_PITCH_PX * 3);
+    expect(seven.height).toBe(TOP_BAND_PX + ROW_PITCH_PX * 3 + EDGE_MARGIN_PX);
+    // seegprep's sub-P076 figure is 12 leads in a 4 x 3 grid at 2406 x 1541 px after its tight crop.
+    const twelve = resliceFigureSize(12);
+    expect(Math.abs(twelve.width / 2406 - 1)).toBeLessThan(0.05);
+    expect(Math.abs(twelve.height / 1541 - 1)).toBeLessThan(0.05);
   });
+
 });
 
 describe('the implant figure', () => {

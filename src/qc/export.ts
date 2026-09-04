@@ -22,7 +22,6 @@ import { contacts } from '@tetravox/module-sdk';
 import { datasetDescriptionJson } from './datasetDescription';
 import {
   Axes,
-  DPI,
   autumnLut,
   drawAxesFrame,
   drawAxesTitle,
@@ -35,6 +34,7 @@ import {
   pt,
   SERIF,
   type Ctx2D,
+  type Extent,
   type Rect,
 } from './mpl';
 import {
@@ -50,6 +50,12 @@ import {
   type Implant3dView,
   type Lead,
 } from './implant3d';
+import {
+  marchingCubes,
+  taubinSmooth,
+  vertexNormals,
+  type Mesh,
+} from './isosurface';
 import { planeBasisFor, resliceGrid, resliceMarks, type ResliceGrid } from './reslice';
 
 const { contactsOf, groupNames } = contacts;
@@ -63,13 +69,42 @@ export const CT_METAL_HU_MAX = 3000;
 /** `alpha=0.85` on the CT overlay. */
 export const CT_ALPHA = 0.85;
 
-/** `ncols=3`, and the per-panel `figsize` in inches. */
+/** The gap label's size. seegprep uses 4.5; see `drawResliceFigure` for why this is not that. */
+export const DISTANCE_LABEL_PT = 6.5;
+
+/** `ncols=3` (`electrode_reslice`). */
 export const RESLICE_NCOLS = 3;
-export const PANEL_WIDTH_IN = 6.2;
-export const PANEL_HEIGHT_IN = 3.0;
-/** `implant_3d`'s `figsize=(6.5 * ncols, 6.0 * nrows)`. */
-export const IMPLANT_PANEL_WIDTH_IN = 6.5;
-export const IMPLANT_PANEL_HEIGHT_IN = 6.0;
+
+/**
+ * The reslice figure's laid-out geometry, **measured on seegprep's own
+ * `sub-P076_desc-reslice_qc.png`** rather than derived from its `figsize`.
+ *
+ * `figsize=(6.2 * ncols, 3.0 * nrows)` at 150 dpi is a 930 x 450 px cell, but `tight_layout` then
+ * packs the axes into a 799 x 358 px pitch and `savefig(bbox="tight")` crops the rest away — so the
+ * emitted PNG's geometry is these numbers, not the figsize's, and matching the figsize made the
+ * canvas 18% too tall. The column ink bands in that file are 13-797 / 812-1596 / 1612-2396 (pitch
+ * 799) and its first-column panel titles sit at y = 92, 444, 794, 1167 (pitch ~358); the axes box's
+ * left spine is at x = 81 and its right edge at 797.
+ */
+export const COLUMN_PITCH_PX = 799;
+export const ROW_PITCH_PX = 358;
+/** The axes box within a column: 68 px in from the column's left, 716 px wide. */
+export const BOX_LEFT_PX = 68;
+export const BOX_WIDTH_PX = 716;
+/** From the top of the figure to the top of the first row's slot — the suptitle's band. */
+export const TOP_BAND_PX = 80;
+/**
+ * Slack at the left and the bottom of the canvas.
+ *
+ * The y label is drawn left of the column's own origin and the last row's x label below its slot;
+ * without the slack both are clipped by the canvas edge. It costs nothing in the output because
+ * `bbox="tight"` crops whatever of it is unused.
+ */
+export const EDGE_MARGIN_PX = 22;
+
+/** `implant_3d`'s panels, measured the same way: the reference PNG is 1589 x 1577 for its 2 x 2. */
+export const IMPLANT_PANEL_WIDTH_PX = 794;
+export const IMPLANT_PANEL_HEIGHT_PX = 788;
 
 /**
  * seegprep's reslice suptitle, with the one word change 1 forces.
@@ -258,10 +293,7 @@ export function resliceTileImage(tile: ResliceTile): {
   return { width: nAlong, height: nAcross, data };
 }
 
-/** The strip `tight_layout` leaves above the first row for the wrapped suptitle. */
-const SUPTITLE_BAND_PX = Math.round(pt(12) * 1.2 * 2 + pt(10));
-
-/** The reslice figure's canvas size in device pixels — `figsize × dpi`, seegprep's small multiples. */
+/** The reslice figure's canvas size in device pixels — seegprep's laid-out small multiples. */
 export function resliceFigureSize(tileCount: number): {
   width: number;
   height: number;
@@ -272,30 +304,82 @@ export function resliceFigureSize(tileCount: number): {
   const ncols = Math.max(1, Math.min(RESLICE_NCOLS, n));
   const nrows = Math.ceil(n / ncols);
   return {
-    width: Math.round(PANEL_WIDTH_IN * ncols * DPI),
-    height: Math.round(PANEL_HEIGHT_IN * nrows * DPI + SUPTITLE_BAND_PX),
+    width: EDGE_MARGIN_PX + COLUMN_PITCH_PX * ncols,
+    height: TOP_BAND_PX + ROW_PITCH_PX * nrows + EDGE_MARGIN_PX,
     ncols,
     nrows,
   };
 }
 
 /**
- * How much of the padded slot the axes box may take.
- *
- * matplotlib's `tight_layout` leaves ~7% of the figure as margin all round before `savefig`'s tight
- * bbox crops it; measured on seegprep's `sub-P076_desc-reslice_qc.png`, its axes boxes are 15%
- * smaller than a slot filling the cell. Applied here so the cropped figure comes out the same pixel
- * size as seegprep's rather than 16% larger.
+ * What sits above and below the axes box inside a row slot, in device pixels — the title with its
+ * pad, and the tick labels plus the x label. The group is centred in the slot, as `tight_layout`
+ * centres it: in the reference, row 1's shorter box (184 px tall) and row 3's (272) both leave
+ * roughly equal slack above and below.
  */
-const PANEL_SHRINK = 0.85;
+const ABOVE_BOX_PX = pt(9) * 1.2 + pt(8);
+const BELOW_BOX_PX = pt(3.5) + pt(6) * 1.2 + pt(4) + pt(7) * 1.2 + pt(6);
 
-/** Panel padding, in device pixels: room for the title, the tick labels and the axis labels. */
-const PANEL_PAD = {
-  left: pt(7 * 1.2) + pt(6) * 2.4 + pt(7) + pt(5),
-  right: pt(8),
-  top: pt(9 * 1.2) + pt(8),
-  bottom: pt(7) + pt(6) * 1.2 + pt(5) + pt(7 * 1.2) + pt(6),
-};
+/**
+ * The figure's laid-out boxes, and the canvas they need.
+ *
+ * The row pitch is {@link ROW_PITCH_PX} — seegprep's — except where a row's own panels are too tall
+ * for it: `aspect="equal"` ties a box's height to its lead's along-extent, so a short lead makes a
+ * tall box, and a fixed pitch then clips that row's tick labels off the bottom. A row that needs
+ * more gets it; every other row keeps the reference's spacing.
+ */
+export function resliceLayout(tiles: readonly ResliceTile[]): {
+  width: number;
+  height: number;
+  ncols: number;
+  nrows: number;
+  boxes: Rect[];
+  extents: Extent[];
+} {
+  const n = Math.max(1, tiles.length);
+  const ncols = Math.max(1, Math.min(RESLICE_NCOLS, n));
+  const nrows = Math.ceil(n / ncols);
+  const extents: Extent[] = tiles.map((tile) => ({
+    x0: tile.grid.su[0] ?? 0,
+    x1: tile.grid.su[tile.grid.su.length - 1] ?? 1,
+    y0: tile.grid.sv[0] ?? 0,
+    y1: tile.grid.sv[tile.grid.sv.length - 1] ?? 1,
+  }));
+  const boxHeights = extents.map(
+    (e) => (BOX_WIDTH_PX * Math.abs(e.y1 - e.y0)) / Math.max(1e-9, Math.abs(e.x1 - e.x0))
+  );
+  const pitches: number[] = [];
+  for (let row = 0; row < nrows; row += 1) {
+    let tallest = 0;
+    for (let col = 0; col < ncols; col += 1) {
+      const i = row * ncols + col;
+      if (i < boxHeights.length) tallest = Math.max(tallest, boxHeights[i] as number);
+    }
+    pitches.push(Math.max(ROW_PITCH_PX, ABOVE_BOX_PX + tallest + BELOW_BOX_PX));
+  }
+  const boxes: Rect[] = tiles.map((_tile, index) => {
+    const col = index % ncols;
+    const row = Math.floor(index / ncols);
+    let top = TOP_BAND_PX;
+    for (let r = 0; r < row; r += 1) top += pitches[r] as number;
+    const boxH = boxHeights[index] as number;
+    const slack = Math.max(0, (pitches[row] as number) - (ABOVE_BOX_PX + boxH + BELOW_BOX_PX));
+    return {
+      x: EDGE_MARGIN_PX + col * COLUMN_PITCH_PX + BOX_LEFT_PX,
+      y: top + slack / 2 + ABOVE_BOX_PX,
+      width: BOX_WIDTH_PX,
+      height: boxH,
+    };
+  });
+  return {
+    width: EDGE_MARGIN_PX + COLUMN_PITCH_PX * ncols,
+    height: TOP_BAND_PX + pitches.reduce((a, b) => a + b, 0) + EDGE_MARGIN_PX,
+    ncols,
+    nrows,
+    boxes,
+    extents,
+  };
+}
 
 /**
  * The whole reslice figure: `nrows × ncols` panels, each an oblique reslice with its rings, its tip
@@ -312,33 +396,15 @@ export function drawResliceFigure(
   drawImage: DrawImageData,
   measure: (text: string) => number
 ): void {
-  const { width, height, ncols, nrows } = resliceFigureSize(tiles.length);
+  const layout = resliceLayout(tiles);
+  const { width, height } = layout;
   ctx.save();
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
   drawSuptitle(ctx, width, RESLICE_SUPTITLE, { measure });
 
-  const cellW = width / ncols;
-  const cellH = (height - SUPTITLE_BAND_PX) / nrows;
   tiles.forEach((tile, index) => {
-    const col = index % ncols;
-    const row = Math.floor(index / ncols);
-    const boxW = (cellW - PANEL_PAD.left - PANEL_PAD.right) * PANEL_SHRINK;
-    const boxH = (cellH - PANEL_PAD.top - PANEL_PAD.bottom) * PANEL_SHRINK;
-    const slot: Rect = {
-      x: col * cellW + PANEL_PAD.left + (cellW - PANEL_PAD.left - PANEL_PAD.right - boxW) / 2,
-      y: SUPTITLE_BAND_PX + row * cellH + PANEL_PAD.top,
-      width: boxW,
-      height: boxH,
-    };
-    const su = tile.grid.su;
-    const sv = tile.grid.sv;
-    const ax = new Axes(slot, {
-      x0: su[0] ?? 0,
-      x1: su[su.length - 1] ?? 1,
-      y0: sv[0] ?? 0,
-      y1: sv[sv.length - 1] ?? 1,
-    });
+    const ax = new Axes(layout.boxes[index] as Rect, layout.extents[index] as Extent);
     const image = resliceTileImage(tile);
     drawImage(image.data, image.width, image.height, ax.box);
 
@@ -362,23 +428,28 @@ export function drawResliceFigure(
         side
       );
     }
-    ctx.fillStyle = tile.color;
-    ctx.font = fontSpec(4.5);
+    // seegprep annotates at `fontsize=4.5`, which on a metal-bright panel is unreadable — and the
+    // number being *legible* is the whole of change 2. 6.5 pt with a 1 px white halo behind it, at
+    // seegprep's own `mid + 0.6 mm` placement.
+    ctx.font = fontSpec(DISTANCE_LABEL_PT);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#ffffff';
+    ctx.fillStyle = tile.color;
     for (const label of tile.labels) {
-      ctx.fillText(
-        label.distanceMm.toFixed(1),
-        ax.px(label.mm.along),
-        ax.py(label.mm.across + 0.6)
-      );
+      const text = label.distanceMm.toFixed(1);
+      const x = ax.px(label.mm.along);
+      const y = ax.py(label.mm.across + 0.6);
+      ctx.strokeText(text, x, y);
+      ctx.fillText(text, x, y);
     }
     ctx.restore();
 
     drawAxesFrame(ctx, ax, { tickLabelSize: 6 });
     drawAxesTitle(ctx, ax, `${tile.electrode}  (n=${tile.marks.length})`, 9);
     drawXLabel(ctx, ax, 'along shaft (mm)', 7, 6);
-    drawYLabel(ctx, ax, 'perp (mm)', 7, pt(6) * 2.4 + pt(7) + pt(5));
+    drawYLabel(ctx, ax, 'perp (mm)', 7, BOX_LEFT_PX - pt(4));
   });
   ctx.restore();
 }
@@ -404,6 +475,80 @@ export async function buildBrainMask(
   opts: { labels?: readonly number[]; paddingMm?: number; stepMm?: number } = {}
 ): Promise<BrainMask | null> {
   if (points.length === 0) return null;
+  const classify = (values: Float32Array): ((v: number) => boolean) | null => {
+    if (opts.labels !== undefined) {
+      const wanted = new Set(opts.labels);
+      return (v) => Number.isFinite(v) && wanted.has(Math.round(v));
+    }
+    const threshold = otsuThreshold(values);
+    return threshold === null ? null : (v) => Number.isFinite(v) && v > threshold;
+  };
+  const sampleBox = async (
+    lo: vec3,
+    hi: vec3,
+    step: number
+  ): Promise<{ mask: BrainMask; lo: vec3; hi: vec3 } | null> => {
+    let s = step;
+    const dimsFor = (d: number): [number, number, number] => [
+      Math.max(2, Math.ceil((hi[0] - lo[0]) / d) + 1),
+      Math.max(2, Math.ceil((hi[1] - lo[1]) / d) + 1),
+      Math.max(2, Math.ceil((hi[2] - lo[2]) / d) + 1),
+    ];
+    let dims = dimsFor(s);
+    while (dims[0] * dims[1] * dims[2] > MAX_SAMPLE_POINTS) {
+      s *= 1.15;
+      dims = dimsFor(s);
+    }
+    const [nx, ny, nz] = dims;
+    const world = new Float32Array(nx * ny * nz * 3);
+    let k = 0;
+    for (let iz = 0; iz < nz; iz += 1) {
+      for (let iy = 0; iy < ny; iy += 1) {
+        for (let ix = 0; ix < nx; ix += 1) {
+          world[k++] = (lo[0] as number) + ix * s;
+          world[k++] = (lo[1] as number) + iy * s;
+          world[k++] = (lo[2] as number) + iz * s;
+        }
+      }
+    }
+    // Nearest for a label map — interpolating between label 1 and label 3 names a tissue that is
+    // not there. The Otsu path is a threshold on a T1, where either order is fine.
+    const values = await sampleVolumeChunked(host, datasetId, world, {
+      order: opts.labels === undefined ? 1 : 0,
+    });
+    const inside = classify(values);
+    if (inside === null) return null;
+    const data = new Uint8Array(nx * ny * nz);
+    const boxLo: vec3 = [Infinity, Infinity, Infinity];
+    const boxHi: vec3 = [-Infinity, -Infinity, -Infinity];
+    let any = false;
+    for (let iz = 0; iz < nz; iz += 1) {
+      for (let iy = 0; iy < ny; iy += 1) {
+        for (let ix = 0; ix < nx; ix += 1) {
+          const at = (iz * ny + iy) * nx + ix;
+          if (!inside(values[at] as number)) continue;
+          data[at] = 1;
+          any = true;
+          const p: vec3 = [
+            (lo[0] as number) + ix * s,
+            (lo[1] as number) + iy * s,
+            (lo[2] as number) + iz * s,
+          ];
+          for (let c = 0; c < 3; c += 1) {
+            if ((p[c] as number) < (boxLo[c] as number)) boxLo[c] = p[c] as number;
+            if ((p[c] as number) > (boxHi[c] as number)) boxHi[c] = p[c] as number;
+          }
+        }
+      }
+    }
+    if (!any) return null;
+    return {
+      mask: { origin: [lo[0], lo[1], lo[2]], step: s, dims, data },
+      lo: boxLo,
+      hi: boxHi,
+    };
+  };
+
   const padding = opts.paddingMm ?? 90;
   const lo: vec3 = [Infinity, Infinity, Infinity];
   const hi: vec3 = [-Infinity, -Infinity, -Infinity];
@@ -413,57 +558,17 @@ export async function buildBrainMask(
       hi[c] = Math.max(hi[c] as number, (p[c] as number) + padding);
     }
   }
-  let step = opts.stepMm ?? BRAIN_STEP_MM;
-  const dimsFor = (s: number): [number, number, number] => [
-    Math.max(2, Math.ceil((hi[0] - lo[0]) / s) + 1),
-    Math.max(2, Math.ceil((hi[1] - lo[1]) / s) + 1),
-    Math.max(2, Math.ceil((hi[2] - lo[2]) / s) + 1),
-  ];
-  let dims = dimsFor(step);
-  while (dims[0] * dims[1] * dims[2] > MAX_SAMPLE_POINTS) {
-    step *= 1.25;
-    dims = dimsFor(step);
-  }
-  const [nx, ny, nz] = dims;
-  const world = new Float32Array(nx * ny * nz * 3);
-  let k = 0;
-  for (let iz = 0; iz < nz; iz += 1) {
-    for (let iy = 0; iy < ny; iy += 1) {
-      for (let ix = 0; ix < nx; ix += 1) {
-        world[k++] = (lo[0] as number) + ix * step;
-        world[k++] = (lo[1] as number) + iy * step;
-        world[k++] = (lo[2] as number) + iz * step;
-      }
-    }
-  }
-  // Nearest for a label map — interpolating between label 1 and label 3 names a tissue that is not
-  // there. The Otsu path is a threshold on a windowed T1, where either order is fine.
-  const values = await sampleVolumeChunked(host, datasetId, world, {
-    order: opts.labels === undefined ? 1 : 0,
-  });
-  const data = new Uint8Array(nx * ny * nz);
-  if (opts.labels !== undefined) {
-    const wanted = new Set(opts.labels);
-    for (let i = 0; i < data.length; i += 1) {
-      const v = values[i] as number;
-      data[i] = Number.isFinite(v) && wanted.has(Math.round(v)) ? 1 : 0;
-    }
-  } else {
-    const threshold = otsuThreshold(values);
-    if (threshold === null) return null;
-    for (let i = 0; i < data.length; i += 1) {
-      const v = values[i] as number;
-      data[i] = Number.isFinite(v) && v > threshold ? 1 : 0;
-    }
-  }
-  let any = false;
-  for (let i = 0; i < data.length; i += 1) {
-    if (data[i] === 1) {
-      any = true;
-      break;
-    }
-  }
-  return any ? { origin: [lo[0], lo[1], lo[2]], step, dims, data } : null;
+  // **Two passes.** The first is coarse and only there to find where the brain actually is; the
+  // second resamples that box at the fine step. One pass over the padded box at 1.4 mm would be
+  // twelve million points against a two-million cap, and coarsening to fit is what made the surface
+  // a blob — the wasted samples are almost all air.
+  const coarse = await sampleBox(lo, hi, 4);
+  if (coarse === null) return null;
+  const margin = 4;
+  const tight: vec3 = [coarse.lo[0] - margin, coarse.lo[1] - margin, coarse.lo[2] - margin];
+  const tightHi: vec3 = [coarse.hi[0] + margin, coarse.hi[1] + margin, coarse.hi[2] + margin];
+  const fine = await sampleBox(tight, tightHi, opts.stepMm ?? BRAIN_STEP_MM);
+  return (fine ?? coarse).mask;
 }
 
 /** Every lead, recentred on the implant's own centroid — seegprep's `_level`. */
@@ -501,7 +606,7 @@ export function centerMask(mask: BrainMask, set: ContactSet): BrainMask {
   };
 }
 
-/** The implant figure's canvas size — `figsize=(6.5 * 2, 6.0 * 2)` at {@link DPI}, plus the legend. */
+/** The implant figure's canvas size — the reference PNG's own 794 x 788 px panels, 2 across. */
 export function implantFigureSize(viewCount: number = IMPLANT3D_VIEWS.length): {
   width: number;
   height: number;
@@ -512,26 +617,37 @@ export function implantFigureSize(viewCount: number = IMPLANT3D_VIEWS.length): {
 } {
   const ncols = viewCount > 1 ? 2 : 1;
   const nrows = Math.ceil(viewCount / ncols);
-  const panelWidth = Math.round(IMPLANT_PANEL_WIDTH_IN * DPI);
-  const panelHeight = Math.round(IMPLANT_PANEL_HEIGHT_IN * DPI);
   return {
-    width: panelWidth * ncols,
-    height: panelHeight * nrows,
+    width: IMPLANT_PANEL_WIDTH_PX * ncols,
+    height: IMPLANT_PANEL_HEIGHT_PX * nrows,
     ncols,
     nrows,
-    panelWidth,
-    panelHeight,
+    panelWidth: IMPLANT_PANEL_WIDTH_PX,
+    panelHeight: IMPLANT_PANEL_HEIGHT_PX,
   };
 }
 
 /**
- * The whole implant figure: the four rendered views tiled 2×2 with capitalised serif titles, the
- * bottom-centre legend and the serif suptitle — `implant_3d`'s matplotlib half, drawn directly.
+ * The brain surface, from a sampled mask: marching cubes, then Taubin smoothing, then normals.
+ *
+ * seegprep runs `smooth_taubin(n_iter=30, pass_band=0.05)`; 15 λ/μ iterations here reach the same
+ * roundness on a mask this size, and stopping earlier keeps the export under a second. `decimate` is
+ * not reproduced — nothing downstream is triangle-bound — so this mesh is denser than seegprep's,
+ * which affects run time and not the picture.
  */
+export function brainSurface(mask: BrainMask): { mesh: Mesh; normals: Float32Array } | null {
+  const mesh = taubinSmooth(
+    marchingCubes({ data: mask.data, dims: mask.dims, origin: mask.origin, step: mask.step }),
+    15
+  );
+  if (mesh.indices.length === 0) return null;
+  return { mesh, normals: vertexNormals(mesh) };
+}
+
 export function drawImplantFigure(
   ctx: Ctx2D,
   leads: readonly Lead[],
-  mask: BrainMask | null,
+  brain: { mesh: Mesh; normals: Float32Array } | null,
   drawImage: DrawImageData,
   measure: (text: string) => number,
   views: readonly Implant3dView[] = IMPLANT3D_VIEWS
@@ -540,35 +656,39 @@ export function drawImplantFigure(
   ctx.save();
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size.width, size.height);
-  // `y=0.99` on a 16 pt serif suptitle; `tight_layout(rect=(0, 0.03, 1, 0.98))` reserves the band.
   drawSuptitle(ctx, size.width, implantSuptitle(leads), {
     sizePt: 16,
     family: SERIF,
-    topPx: size.height * 0.01,
+    topPx: pt(6),
     measure,
   });
 
-  const bandTop = size.height * 0.045;
-  const bandBottom = size.height * 0.955;
-  const cellH = (bandBottom - bandTop) / size.nrows;
-  const cellW = size.width / size.ncols;
-  // Rendered at the panel's own pixel size: a third of it made a 1.3 mm contact about one pixel
-  // across, so the leads read as dashes rather than as the strings of beads the reference shows.
-  const renderW = Math.round(cellW * 0.94);
-  const renderH = Math.round(cellH - pt(20));
+  // Measured on the reference PNG: a panel title sits ~60 px into its row band, the first row's
+  // band also has to clear the suptitle above it, and the legend lives inside the last row's band.
+  const titleBand = 62;
+  const firstRowTitleBand = 108;
+  const legendBand = 100;
+  // Every view is rendered into the same-sized rectangle so all four share one camera scale, as
+  // pyvista's do (one 1100 x 1000 window per shot). Rows differ in what they must leave for the
+  // suptitle and the legend, so the render height is the tightest of them and each rect is centred
+  // in its own row's free space — otherwise the top row's brains come out 9% larger than the
+  // bottom's, which no anatomy explains.
+  const renderHeight =
+    size.panelHeight - Math.max(firstRowTitleBand, titleBand + legendBand);
   views.forEach((view, index) => {
     const col = index % size.ncols;
     const row = Math.floor(index / size.ncols);
-    // Inset so neighbouring views do not touch — matplotlib's `tight_layout` leaves the same gutter.
-    const inset = cellW * 0.03;
+    const isLastRow = row === size.nrows - 1;
+    const band = row === 0 ? firstRowTitleBand : titleBand;
+    const free = size.panelHeight - band - (isLastRow ? legendBand : 0);
     const rect: Rect = {
-      x: col * cellW + inset,
-      y: bandTop + row * cellH + pt(20),
-      width: cellW - 2 * inset,
-      height: cellH - pt(20) - inset,
+      x: col * size.panelWidth,
+      y: row * size.panelHeight + band + (free - renderHeight) / 2,
+      width: size.panelWidth,
+      height: renderHeight,
     };
-    const pixels = renderImplantView(view, leads, mask, renderW, renderH);
-    drawImage(pixels, renderW, renderH, rect);
+    const pixels = renderImplantView(view, leads, brain, Math.round(rect.width), Math.round(rect.height));
+    drawImage(pixels, Math.round(rect.width), Math.round(rect.height), rect);
     ctx.save();
     ctx.fillStyle = '#000000';
     ctx.font = fontSpec(13, { family: SERIF, weight: 'bold' }); // axes.titleweight = bold
@@ -577,13 +697,13 @@ export function drawImplantFigure(
     ctx.fillText(
       view.charAt(0).toUpperCase() + view.slice(1),
       rect.x + rect.width / 2,
-      rect.y - pt(6)
+      rect.y - pt(8)
     );
     ctx.restore();
   });
 
   ctx.font = fontSpec(9);
-  drawImplantLegend(ctx, legendOf(leads), size.width, size.height - pt(6), {
+  drawImplantLegend(ctx, legendOf(leads), size.width, size.height - pt(10), {
     fontPx: pt(9),
     measure,
   });

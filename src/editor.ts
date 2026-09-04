@@ -106,6 +106,7 @@ import {
   pngBesideReslice,
 } from './qc/paths';
 import {
+  brainSurface,
   buildBrainMask,
   buildLeads,
   buildResliceTiles,
@@ -114,7 +115,7 @@ import {
   drawResliceFigure,
   ensureDatasetDescription,
   implantFigureSize,
-  resliceFigureSize,
+  resliceLayout,
   type DrawImageData,
 } from './qc/export';
 import type { BrainMask } from './qc/implant3d';
@@ -1889,7 +1890,7 @@ export function createModel(host: ModuleHost): SeegModel {
       if (tiles.length === 0) {
         return qcFailed('no electrode has the two contacts a reslice plane needs');
       }
-      const size = resliceFigureSize(tiles.length);
+      const size = resliceLayout(tiles);
       const figure = figureCanvas(size.width, size.height);
       drawResliceFigure(figure.ctx, tiles, figure.drawImage, figure.measure);
       return await writeFigure(
@@ -1953,7 +1954,7 @@ export function createModel(host: ModuleHost): SeegModel {
       }
       const size = implantFigureSize();
       const figure = figureCanvas(size.width, size.height);
-      drawImplantFigure(figure.ctx, leads, mask, figure.drawImage, figure.measure);
+      drawImplantFigure(figure.ctx, leads, mask === null ? null : brainSurface(mask), figure.drawImage, figure.measure);
       return await writeFigure(figure.canvas, pdfPath, pngPath, '4 views');
     } catch (error: unknown) {
       return qcFailed(reasonOf(error));

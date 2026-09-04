@@ -309,19 +309,30 @@ and `aspect="equal"`, spines and ticks, the suptitle, and `savefig(bbox="tight")
 pixels). What it does *not* reproduce is matplotlib's `tight_layout` solver — panels are placed with padding
 derived from the same font sizes, so panel positions can differ from a matplotlib render by a few pixels.
 
-Measured against seegprep's own `sub-P076` figures (12 leads, 106 contacts, same CT and SimNIBS T1): the
-reslice figure comes out 2676 x 1825 px against seegprep's 2406 x 1541, with the same panel order, the same
-per-panel data extents, the same tick values and the same warm-overlay coverage (36 080 sampled CT pixels
-against 36 036). The implant figure's brain renders at median grey 203 against seegprep's 205, spanning 57%
-of a panel's width against 60%.
+The figure's laid-out geometry is measured off seegprep's own PNG rather than taken from its `figsize`:
+`tight_layout` packs a 930 x 450 px cell into a 799 x 358 px pitch and `bbox="tight"` crops the rest, so the
+figsize alone produced a canvas 18% too tall. Measured against seegprep's `sub-P076` figures (12 leads, 106
+contacts, same CT and SimNIBS T1): the reslice figure is 2419 x 1590 px against seegprep's 2406 x 1541 (0.5%
+and 3%), with the same panel order, the same per-panel data extents, the same tick values and 37 728 sampled
+warm-overlay pixels against 36 036. The implant figure's brain silhouette has a mean IoU of 0.87 against
+seegprep's, per view 0.82 (superior) / 0.89 (left) / 0.91 (right) / 0.84 (anterior), at median grey 193
+against 205.
 
 **The 3-D implant figure is rendered, not screenshotted** (0.2.2). Through 0.2.1 it drove the app's own 3-D
 view through four camera presets and captured each — which showed the app rather than a glass brain, and
-left your camera at the superior preset. It is now drawn from the contacts plus a coarse brain mask sampled
-out of the open T1 (or the SimNIBS tissue map, when one is loaded, using seegprep's `brain_labels = (1, 2)`;
-without labels, an Otsu cut on the T1). **Your 3-D view is not touched.** The renderer is a splat-and-depth
-stand-in for VTK's marching cubes and three-light shading, so the silhouette is the mask's and has no gyral
-detail; if no volume is open the leads are still drawn and a toast says the brain is missing.
+left your camera at the superior preset. It is now drawn from the contacts plus a brain mask sampled out of
+the SimNIBS tissue map when one is loaded (seegprep's `brain_labels = (1, 2)`), else an Otsu cut on the T1.
+**Your 3-D view is not touched.**
+
+`src/qc/isosurface.ts` is the surface half: marching cubes at 1.4 mm — with the 256-case table *computed*
+from the cube's own topology rather than typed, and checked against a sphere's analytic area, volume and
+watertightness — then Taubin λ/μ smoothing, as seegprep runs `smooth_taubin`. `qc/implant3d.ts` rasterises
+it as back-to-front translucent triangles at `alpha = 0.14` with three-light shading, so gyri, sulci, the
+cerebellum and the overlapping hemispheres all read; the leads are drawn after the brain, at full colour.
+The mask is found in two passes (a coarse one to locate the brain, a fine one inside that box) because one
+pass over the padded box would be six times `sampleVolume`'s cap. `decimate` is not reproduced, so the mesh
+is denser than seegprep's — a run-time difference, not a visible one. If no volume is open the leads are
+still drawn and a toast says the brain is missing.
 
 **A Save sheet opens the first time you export**, pre-filled with that default path — press Save and
 the figures land exactly there. Tetravox lets an extension write only where you have named a file, so

@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { vec3 } from '@tetravox/module-sdk';
+import { marchingCubes, taubinSmooth, vertexNormals } from '../../src/qc/isosurface';
 import {
   BRAIN_COLOR,
   BRAIN_OPACITY,
@@ -23,12 +24,10 @@ import {
   hexRgb,
   implantSuptitle,
   legendOf,
-  occupiedSphere,
   otsuThreshold,
   paletteColor,
   project,
   renderImplantView,
-  type BrainMask,
   type Lead,
 } from '../../src/qc/implant3d';
 
@@ -126,32 +125,73 @@ describe('renderImplantView', () => {
     expect(matched).toBeGreaterThan(20);
   });
 
-  it('renders a brain mask as a translucent shape, not a box', () => {
-    // A sphere of radius 40 mm, sampled at 2 mm.
+  it('renders a brain surface as a translucent shell, not a box', () => {
+    // A 40 mm ball, meshed and smoothed the way the export does.
     const step = 2;
     const n = 45;
-    const data = new Uint8Array(n * n * n);
+    const data = new Float32Array(n * n * n);
     const c = (n - 1) / 2;
     for (let k = 0; k < n; k += 1) {
       for (let j = 0; j < n; j += 1) {
         for (let i = 0; i < n; i += 1) {
-          const d = Math.hypot(i - c, j - c, k - c) * step;
-          data[(k * n + j) * n + i] = d <= 40 ? 1 : 0;
+          data[(k * n + j) * n + i] = 40 - Math.hypot(i - c, j - c, k - c) * step;
         }
       }
     }
-    const mask: BrainMask = { origin: [-c * step, -c * step, -c * step], step, dims: [n, n, n], data };
-    const w = 100;
-    const h = 100;
-    const pixels = renderImplantView('superior', [], mask, w, h);
+    const mesh = taubinSmooth(
+      marchingCubes({ data, dims: [n, n, n], origin: [-c * step, -c * step, -c * step], step }, 0),
+      4
+    );
+    const brain = { mesh, normals: vertexNormals(mesh) };
+    const w = 120;
+    const h = 120;
+    const pixels = renderImplantView('superior', [], brain, w, h);
     const tinted = (x: number, y: number): boolean => {
-      const i = (y * w + x) * 4;
+      const i = (Math.round(y) * w + Math.round(x)) * 4;
       return (pixels[i] as number) < 250 || (pixels[i + 2] as number) < 250;
     };
-    // The centre is inside the silhouette; the corners are outside it. A box would tint both.
+    // Inside the silhouette, tinted; at the corners, untouched. A box would tint both.
     expect(tinted(w / 2, h / 2)).toBe(true);
     expect(tinted(1, 1)).toBe(false);
     expect(tinted(w - 2, h - 2)).toBe(false);
+    // And the shell reads as glass, not as paint: the centre is a light grey, not near-black.
+    const mid = ((h / 2) * w + w / 2) * 4;
+    expect(pixels[mid] as number).toBeGreaterThan(150);
+    expect(pixels[mid] as number).toBeLessThan(249);
+  });
+
+  it('draws the leads over the brain rather than dimmed through it', () => {
+    const step = 2;
+    const n = 45;
+    const data = new Float32Array(n * n * n);
+    const c = (n - 1) / 2;
+    for (let k = 0; k < n; k += 1) {
+      for (let j = 0; j < n; j += 1) {
+        for (let i = 0; i < n; i += 1) {
+          data[(k * n + j) * n + i] = 40 - Math.hypot(i - c, j - c, k - c) * step;
+        }
+      }
+    }
+    const mesh = marchingCubes(
+      { data, dims: [n, n, n], origin: [-c * step, -c * step, -c * step], step },
+      0
+    );
+    const brain = { mesh, normals: vertexNormals(mesh) };
+    const w = 140;
+    const h = 140;
+    const withBrain = renderImplantView('superior', [lead], brain, w, h);
+    const strong = (px: Uint8ClampedArray): number => {
+      let n2 = 0;
+      for (let i = 0; i < w * h; i += 1) {
+        const r = px[i * 4] as number;
+        const g = px[i * 4 + 1] as number;
+        const b = px[i * 4 + 2] as number;
+        if (r > 100 && r > g * 1.6 && r > b * 1.6) n2 += 1;
+      }
+      return n2;
+    };
+    // The lead is inside the ball, so a brain drawn *after* it would wash every one of these out.
+    expect(strong(withBrain)).toBeGreaterThan(20);
   });
 });
 
@@ -192,33 +232,17 @@ describe('otsuThreshold', () => {
   });
 });
 
-describe('occupiedSphere', () => {
-  it("returns the occupied shape's bounding sphere, not the sampled grid's box", () => {
-    // A 20 mm ball at the origin, inside a grid padded far past it.
-    const n = 41;
-    const step = 2;
-    const data = new Uint8Array(n * n * n);
-    const c = (n - 1) / 2;
-    for (let k = 0; k < n; k += 1) {
-      for (let j = 0; j < n; j += 1) {
-        for (let i = 0; i < n; i += 1) {
-          data[(k * n + j) * n + i] = Math.hypot(i - c, j - c, k - c) * step <= 20 ? 1 : 0;
-        }
-      }
-    }
-    const points = occupiedSphere({
-      origin: [-c * step, -c * step, -c * step],
-      step,
-      dims: [n, n, n],
-      data,
-    });
-    expect(points).toHaveLength(6);
-    for (const p of points) expect(Math.hypot(...p)).toBeCloseTo(20, 0);
+describe('otsuThreshold', () => {
+  it('separates two well-spaced modes', () => {
+    const values = [...Array.from({ length: 500 }, () => 10), ...Array.from({ length: 500 }, () => 200)];
+    const t = otsuThreshold(values);
+    expect(t).not.toBeNull();
+    expect(t as number).toBeGreaterThan(10);
+    expect(t as number).toBeLessThan(200);
   });
 
-  it('is empty for a mask with nothing in it', () => {
-    expect(
-      occupiedSphere({ origin: [0, 0, 0], step: 1, dims: [2, 2, 2], data: new Uint8Array(8) })
-    ).toEqual([]);
+  it('is null when nothing is finite', () => {
+    expect(otsuThreshold([Number.NaN, Number.NaN])).toBeNull();
   });
 });
+

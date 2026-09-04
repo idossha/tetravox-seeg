@@ -24,6 +24,17 @@
   printable copy. One Save sheet still admits all of them, and the reslice report is now one page
   holding the whole grid rather than one page per electrode.
 
+- **The 3-D figure is a real glass brain.** The brain surface is built with marching cubes from the
+  SimNIBS tissue map (or the T1), smoothed the way seegprep smooths its own, and drawn as translucent
+  triangles from back to front — so gyri, sulci, the cerebellum and the brainstem are all there, the
+  two hemispheres overlap into a denser grey where they cross, and the leads read at full colour in
+  front of it. The camera frames each view the way seegprep's does, so all four show the whole brain
+  at one scale.
+
+- **The gap distances are readable.** seegprep's own annotation size is too small to read over bright
+  metal; the distance is printed a little larger with a white outline behind it, still between the
+  two rings it measures.
+
 - **The 3-D figure no longer photographs your screen.** It used to swing the app's 3-D view through
   four camera presets and take a screenshot of each, which meant the figure showed the app — its
   background, its slice planes, its glyphs — and left your camera pointing at the superior preset
