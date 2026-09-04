@@ -1,9 +1,8 @@
 # Changelog
 
-## 0.2.1 — Unreleased
+## 0.2.1 — 2026-09-03
 
-Still requires Tetravox 0.3.5 or newer, and the PDF exports need the Tetravox release that accepts a
-`.pdf` from an extension (Tetravox PR: "an extension may write a .pdf figure").
+Requires Tetravox 0.3.6 or newer: the PDF exports need a host that accepts a `.pdf` from an extension.
 
 - **QC export worked again, and now says why when it does not.** On the released 0.2.0 every figure
   came back `error` — all three of them, with nothing else to go on. The export was writing to the
@@ -34,6 +33,21 @@ Still requires Tetravox 0.3.5 or newer, and the PDF exports need the Tetravox re
 
 - **The QC export can be run from a job file**, as `export-qc`: `out` names the reslice PDF under
   `--out` and the 3-D figure is written beside it, so a batch can regenerate a paper's figures.
+
+- **The pop-out window opens sized for the panel, and a contact keeps its name.** Three things
+  were wrong at once in a popped-out window. The contact list's name cell was a fixed 64 px with
+  `truncate` on it, so a site naming its contacts `L-CING-MID01` read `L-CING-…` on every row while
+  the column beside it was empty — the name now takes the width the fixed cells leave and is never
+  shortened, and the status word is the only cell that may ellipsis. The controls column had no
+  scroller of its own, so on a shaft with a model the per-gap table and its summary ran off the
+  bottom of the window; both columns now scroll independently and the window itself never does.
+  And the window asked for was 720 x 420 — narrower and less than half as tall as its own contents —
+  so it opened with the controls cut off and the list squeezed; it now asks for 760 x 620, measured
+  from the panel's own CSS against a subject with an eight-gap model, and still well inside a
+  1440x900 laptop's work area.
+- The controls column is 22 rem rather than 19, which is where the six edit buttons stop wrapping
+  to a third row; the status and snap-mode lines stay on one line and ellipsis rather than wrapping;
+  the column stacks are on an 8 px gap. The docked panel is unchanged.
 
 ## 0.2.0 — 2026-09-03
 

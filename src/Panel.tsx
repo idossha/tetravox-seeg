@@ -85,6 +85,7 @@ function ratio(value: number | null): string {
   return value === null ? "—" : `${(value * 100).toFixed(0)} %`;
 }
 
+/** The status word. It is the one cell allowed to ellipsis: the name never is. */
 function StatusChip({ status }: { status: string }): React.JSX.Element {
   const tone =
     status === "added"
@@ -107,7 +108,7 @@ function ContactRow({
       data-testid={`seeg-row-${row.name}`}
       data-selected={row.selected}
       data-status={row.status}
-      className={`flex items-center gap-1 text-[11px] ${row.selected ? "text-tvx-text" : ""}`}
+      className={`flex items-center gap-1 leading-5 text-[11px] ${row.selected ? "text-tvx-text" : ""}`}
       /*
         The selected row is marked with an inline style, not a utility class: the panel ships as a
         downloadable bundle and Tailwind only compiles the classes it finds in the *app's* sources,
@@ -127,7 +128,13 @@ function ContactRow({
       <button
         type="button"
         data-testid={`seeg-select-${row.name}`}
-        className={`w-16 shrink-0 truncate text-left tabular-nums hover:text-tvx-accent ${
+        /*
+          `min-w-0 flex-1`, never `w-16 truncate`: a site naming a contact `L-CING-MID01` got
+          `L-CING-…` in every row while the column beside it was empty. The name is the row's
+          identity — it takes the space the fixed-width cells leave, and `whitespace-nowrap`
+          keeps it on one line.
+        */
+        className={`min-w-0 flex-1 whitespace-nowrap text-left tabular-nums hover:text-tvx-accent ${
           row.selected ? "font-semibold text-tvx-accent-strong" : ""
         }`}
         title={
@@ -147,7 +154,7 @@ function ContactRow({
       </button>
       <StatusChip status={row.status} />
       <span
-        className="flex-1 text-right tabular-nums text-tvx-dim"
+        className="w-16 shrink-0 text-right tabular-nums text-tvx-dim"
         title="3-D centre-to-centre distance to the previous contact"
       >
         {millimetres(row.spacingMm)}
@@ -290,7 +297,7 @@ function ModelSection({
       {model !== null && model.gaps.length > 0 && (
         <table
           data-testid="seeg-model-gaps"
-          className="w-full tabular-nums"
+          className="w-full leading-4 tabular-nums"
           /* A real table, not a flex list: the four columns are a small numeric matrix and a
              screen reader reading it as one row of prose would be reading it wrong. */
         >
@@ -381,10 +388,16 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         wide
           ? {
               display: "grid",
-              gridTemplateColumns: "minmax(0, 19rem) minmax(0, 1fr)",
-              gap: "0.75rem",
+              // 22rem is what the controls column measures with nothing wrapping to a third row;
+              // 19rem wrapped the six edit buttons and pushed the gap table below the fold.
+              gridTemplateColumns: "minmax(0, 22rem) minmax(0, 1fr)",
+              gap: "0.5rem",
               height: "100%",
               minHeight: 0,
+              // Each column scrolls; the window never does. The host's mount is `overflow-y-auto`,
+              // so a panel taller than its own box would scroll the whole surface and take the
+              // footer and the list header with it.
+              overflow: "hidden",
             }
           : undefined
       }
@@ -397,8 +410,10 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         fifteen-shaft subject is ~200 rows, and in the slot they are behind one small scroller.
       */}
       <div
-        className={wide ? "flex flex-col gap-1.5" : "contents"}
-        style={wide ? { minWidth: 0 } : undefined}
+        className={wide ? "flex flex-col gap-2" : "contents"}
+        // The controls column scrolls on its own: a fifteen-gap model table is taller than any
+        // window worth opening, and without this it simply ran off the bottom.
+        style={wide ? { minWidth: 0, minHeight: 0, overflowY: "auto" } : undefined}
       >
       {/*
         The source line is also the Inputs step: the manifest's reader only claims a file whose
@@ -549,7 +564,7 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
 
       {/* There is one Snap now; this line is the only way to tell which mode ran. */}
       {view.snapNote !== null && (
-        <p data-testid="seeg-snap-mode" className="text-tvx-dim">
+        <p data-testid="seeg-snap-mode" className="truncate text-tvx-dim" title={view.snapNote}>
           {view.snapNote}
         </p>
       )}
@@ -655,7 +670,8 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
         </span>
       </div>
 
-      <p data-testid="seeg-stats" className="tabular-nums text-tvx-dim">
+      {/* One line, ellipsised: wrapped to three in a narrow window and shoved the diagram down. */}
+      <p data-testid="seeg-stats" className="truncate tabular-nums text-tvx-dim">
         {view.stats === null ? (
           "no electrode selected"
         ) : (
@@ -732,8 +748,8 @@ export function SeegPanel({ model }: { model: SeegModel }): React.JSX.Element {
       </div>
 
       <div
-        className={wide ? "flex flex-col gap-1.5" : "contents"}
-        style={wide ? { minWidth: 0, minHeight: 0 } : undefined}
+        className={wide ? "flex flex-col gap-2" : "contents"}
+        style={wide ? { minWidth: 0, minHeight: 0, overflow: "hidden" } : undefined}
       >
       <ul
         data-testid="seeg-list"
@@ -829,7 +845,7 @@ function QcExportSheet({ model }: { model: SeegModel }): React.JSX.Element {
   return (
     <div
       data-testid="seeg-qc-export"
-      className="flex flex-col gap-1 border-t border-tvx-line pt-1.5 mt-1"
+      className="flex flex-col gap-1 border-t border-tvx-line pt-1.5"
     >
       <div className="text-tvx-dim">QC export (PDF)</div>
       <label className="flex items-center gap-1.5">
