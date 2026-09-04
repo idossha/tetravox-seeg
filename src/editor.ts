@@ -104,10 +104,14 @@ import {
   WRITER_RESLICE_PNG_STEM,
   implant3dBesideReslice,
   pngBesideReslice,
+  qcResliceNameFor,
 } from './qc/paths';
 import {
   brainSurface,
   buildBrainMask,
+  chooseBackground,
+  CT_SOFT_HU_MAX,
+  CT_SOFT_HU_MIN,
   buildLeads,
   buildResliceTiles,
   centerMask,
@@ -404,6 +408,14 @@ export function createModel(host: ModuleHost): SeegModel {
   let tsvPath: string | null = null;
   /** The T1 a `load` operation named and found open, for the block's `source` (§13.6). */
   let t1Path: string | null = null;
+  /**
+   * The T1 sibling discovery *found on disk*, open or not (0.2.2, re-released).
+   *
+   * Distinct from {@link t1Path}, which is only ever a dataset the scene actually has: a module
+   * cannot open a file, so "there is a T1 at this path and nobody opened it" is a real state, and
+   * the QC export has to be able to say it rather than emit a white figure.
+   */
+  let foundT1Path: string | null = null;
   let pendingTsv: string | null = null;
   /**
    * The QC export's *default* output paths, resolved from whichever `host.files.siblings` call
@@ -796,6 +808,22 @@ export function createModel(host: ModuleHost): SeegModel {
     return 'shown';
   };
 
+  /**
+   * Records a T1 the sibling discovery found, and binds it when it happens to be open.
+   *
+   * Called from both anchors and from the `load` operation, because before 0.2.2's re-release the
+   * only thing that ever set {@link t1Path} was a job's explicit `t1:` — so an interactive session
+   * that opened the table had no T1 even with one sitting where the manifest says it is, and the QC
+   * reslice came out on white paper. Binding is best-effort: {@link showT1} answers `'not-open'`
+   * when the file is not a dataset, and {@link foundT1Path} then carries the path so the export can
+   * say where it is.
+   */
+  const noteT1 = (path: string | null): void => {
+    if (path === null || path === '') return;
+    foundT1Path = path;
+    if (t1Path === null) showT1(path);
+  };
+
   const buildLayer = (): void => {
     const dataset = host.scene.datasets().find((d) => d.id === datasetId);
     if (dataset === undefined) return;
@@ -890,6 +918,7 @@ export function createModel(host: ModuleHost): SeegModel {
     siteCounts = null;
     banner = null;
     t1Path = null;
+    foundT1Path = null;
     source = {
       tsv: path,
       coordsystem: null,
@@ -1709,7 +1738,7 @@ export function createModel(host: ModuleHost): SeegModel {
     if (bids !== null) return bids;
     if (tsvPath === null) return null;
     const directory = tsvPath.slice(0, Math.max(0, tsvPath.lastIndexOf('/') + 1));
-    return `${directory}${stemOf(baseNameOf(tsvPath))}_desc-reslice_qc.pdf`;
+    return `${directory}${qcResliceNameFor(tsvPath)}`;
   };
 
   /**
@@ -1885,8 +1914,16 @@ export function createModel(host: ModuleHost): SeegModel {
       return qcFailed('no CT is bound — open the CT these contacts were localised on first');
     }
     try {
-      const t1DatasetId = host.scene.datasets().find((d) => d.path === t1Path)?.id ?? null;
-      const tiles = await buildResliceTiles(host, set, { ctDatasetId: datasetId, t1DatasetId });
+      const background = chooseBackground(host.scene.datasets(), {
+        ctDatasetId: datasetId,
+        boundT1Path: t1Path,
+        discoveredT1Path: foundT1Path,
+      });
+      const tiles = await buildResliceTiles(host, set, {
+        ctDatasetId: datasetId,
+        backgroundDatasetId: background.datasetId,
+        backgroundWindow: background.window,
+      });
       if (tiles.length === 0) {
         return qcFailed('no electrode has the two contacts a reslice plane needs');
       }
@@ -1897,7 +1934,7 @@ export function createModel(host: ModuleHost): SeegModel {
         figure.canvas,
         pdfPath,
         pngPath,
-        `${tiles.length} electrode${tiles.length === 1 ? '' : 's'}`
+        `${tiles.length} electrode${tiles.length === 1 ? '' : 's'}, ${background.detail}`
       );
     } catch (error: unknown) {
       return qcFailed(reasonOf(error));
@@ -1911,12 +1948,89 @@ export function createModel(host: ModuleHost): SeegModel {
    * T1 with an Otsu cut, which is the fallback the figure degrades to. The CT is never used — bone
    * and metal dominate it, and the silhouette would be a skull.
    */
-  const brainSource = (): { id: string; labels: readonly number[] | undefined } | null => {
+  interface BrainSource {
+    id: string;
+    labels: readonly number[] | undefined;
+    /** A fixed HU window instead of Otsu, for the CT-derived silhouette. */
+    window: { min: number; max: number } | undefined;
+    /** Keep only the largest component — the CT's soft tissue is scalp as well as brain. */
+    largestComponent: boolean;
+    /** Which volume the silhouette came from, for the export result. */
+    detail: string;
+    /** The same volume in a few words, for the sentence a failed silhouette prints. */
+    short: string;
+  }
+
+  const brainSource = (): BrainSource | null => {
     const open = host.scene.datasets().filter((d) => d.kind === 'volume');
     const tissue = open.find((d) => /final_tissues|tissue|labelling/i.test(d.path ?? d.name));
-    if (tissue !== undefined) return { id: tissue.id, labels: [1, 2] };
-    const t1 = open.find((d) => d.path === t1Path);
-    return t1 === undefined ? null : { id: t1.id, labels: undefined };
+    if (tissue !== undefined) {
+      return {
+        id: tissue.id,
+        labels: [1, 2],
+        window: undefined,
+        largestComponent: false,
+        detail: `brain: ${tissue.name} labels 1,2`,
+        short: tissue.name,
+      };
+    }
+    const background = chooseBackground(open, {
+      ctDatasetId: datasetId,
+      boundT1Path: t1Path,
+      discoveredT1Path: foundT1Path,
+    });
+    if (background.datasetId === null) return null;
+    if (background.window === 'percentile') {
+      const chosen = open.find((d) => d.id === background.datasetId);
+      return {
+        id: background.datasetId,
+        labels: undefined,
+        window: undefined,
+        largestComponent: false,
+        detail: `brain: ${chosen?.name ?? background.datasetId}`,
+        short: chosen?.name ?? background.datasetId,
+      };
+    }
+    // The CT is the only volume there is. Soft tissue is brain *and* scalp, separated by a skull the
+    // window excludes, so the largest component of the cut is the brain — and if that is not what
+    // came out, {@link doExportImplant3d} says so rather than drawing a scalp.
+    return {
+      id: background.datasetId,
+      labels: undefined,
+      window: { min: CT_SOFT_HU_MIN, max: CT_SOFT_HU_MAX },
+      largestComponent: true,
+      detail: background.detail.replace('background:', 'brain from'),
+      short: `the CT’s ${CT_SOFT_HU_MIN}..${CT_SOFT_HU_MAX} HU soft-tissue cut`,
+    };
+  };
+
+  /**
+   * Is this mask plausibly a brain, or did the CT cut give something else?
+   *
+   * Two shapes and, for the CT, a volume. An adult brain spans roughly 130-190 mm, so a mask past
+   * 260 is scalp and brain fused through a burr hole, and a mask that fills nearly all of its own
+   * bounding box is a box rather than an organ — what a flat or unwindowed volume gives.
+   *
+   * `strict` is the CT-derived silhouette, and it is measured as well as shaped: an adult brain is
+   * 1100-1600 cm³, so a component outside 700-2200 is the head. That check is the one that matters —
+   * on P077 the −100..300 HU cut's largest component *was* the whole head, scalp and face included,
+   * and it passed both shape tests. Rejecting it is how the figure says "no brain" instead of
+   * drawing a skull and calling it anatomy.
+   */
+  const plausibleBrain = (mask: BrainMask, strict: boolean): boolean => {
+    const span = Math.max(
+      mask.dims[0] * mask.step,
+      mask.dims[1] * mask.step,
+      mask.dims[2] * mask.step
+    );
+    if (span > 260) return false;
+    let filled = 0;
+    for (const v of mask.data) if (v !== 0) filled += 1;
+    const fraction = filled / Math.max(1, mask.data.length);
+    if (fraction <= 0 || fraction > 0.85) return false;
+    if (!strict) return true;
+    const cm3 = (filled * mask.step ** 3) / 1000;
+    return cm3 >= 700 && cm3 <= 2200;
   };
 
   /**
@@ -1938,24 +2052,55 @@ export function createModel(host: ModuleHost): SeegModel {
       if (leads.length === 0) return qcFailed('there are no contacts to draw');
       const source = brainSource();
       let mask: BrainMask | null = null;
+      // Whatever happens to the brain is said out loud — in the figure and in the result — because
+      // a silhouette that is quietly missing reads as an implant floating in nothing (0.2.2).
+      let note: string | null = null;
+      let detail = '4 views';
+      // The one sentence that says where to get a brain, appended to whatever went wrong.
+      // The panel gets the T1's last three path segments and the result gets all of it: a full
+      // absolute path wraps onto a third line and runs into the panel titles.
+      const shortT1 =
+        foundT1Path === null ? '' : `…/${foundT1Path.split('/').slice(-3).join('/')}`;
+      const hint = (where: string): string =>
+        foundT1Path === null || t1Path !== null
+          ? ''
+          : ` — T1 found at ${where} but not open; open it to get the brain`;
+      const t1Hint = hint(foundT1Path ?? '');
+      const t1HintShort = hint(shortT1);
+      let panelNote: string | null = null;
       if (source === null) {
-        host.ui.toast(
-          'warn',
-          'sEEG: no T1 or tissue volume is open, so the implant figure has no brain behind it.'
-        );
+        note = `no T1 open — brain silhouette omitted${t1Hint}`;
+        panelNote = `no T1 open — brain silhouette omitted${t1HintShort}`;
       } else {
-        const raw = await buildBrainMask(
-          host,
-          source.id,
-          set.contacts.map((c) => c.position),
-          source.labels === undefined ? {} : { labels: source.labels }
-        );
-        mask = raw === null ? null : centerMask(raw, set);
+        const raw = await buildBrainMask(host, source.id, set.contacts.map((c) => c.position), {
+          ...(source.labels === undefined ? {} : { labels: source.labels }),
+          ...(source.window === undefined ? {} : { window: source.window }),
+          ...(source.largestComponent ? { largestComponent: true } : {}),
+        });
+        if (raw === null || !plausibleBrain(raw, source.largestComponent)) {
+          note = `${source.short} gave no usable brain — silhouette omitted${t1Hint}`;
+          panelNote = `${source.short} gave no usable brain — silhouette omitted${t1HintShort}`;
+        } else {
+          mask = centerMask(raw, set);
+          detail = `4 views, ${source.detail}`;
+        }
+      }
+      if (note !== null) {
+        detail = `4 views, ${note}`;
+        host.ui.toast('warn', `sEEG: ${note}.`);
       }
       const size = implantFigureSize();
       const figure = figureCanvas(size.width, size.height);
-      drawImplantFigure(figure.ctx, leads, mask === null ? null : brainSurface(mask), figure.drawImage, figure.measure);
-      return await writeFigure(figure.canvas, pdfPath, pngPath, '4 views');
+      drawImplantFigure(
+        figure.ctx,
+        leads,
+        mask === null ? null : brainSurface(mask),
+        figure.drawImage,
+        figure.measure,
+        undefined,
+        panelNote
+      );
+      return await writeFigure(figure.canvas, pdfPath, pngPath, detail);
     } catch (error: unknown) {
       return qcFailed(reasonOf(error));
     }
@@ -2471,6 +2616,8 @@ export function createModel(host: ModuleHost): SeegModel {
         // is a sibling of the table the job named, which is what puts it on the read allow-list.
         const beside = bundleOf(await host.files.siblings(tsv));
         if (beside.geometry !== null) await readGeometrySidecar(beside.geometry);
+        // The discovered T1 is bound when the job did not name one — same rule as the panel's.
+        noteT1(beside.t1);
         // After the CT binds, because {@link showT1} writes the block and `applyTable` is what
         // creates the `source` it writes into. Absent `t1` reports nothing at all, which is what
         // makes the field additive for every job written before it did anything.
@@ -2697,6 +2844,7 @@ export function createModel(host: ModuleHost): SeegModel {
       qcAdmitted = null;
       applyDerivativesDefaultSave(found);
       const bundle = bundleOf(found);
+      noteT1(bundle.t1);
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
       if (bundle.geometry !== null) await readGeometrySidecar(bundle.geometry);
       if (bundle.ct !== null && datasetId === null) {
@@ -2726,6 +2874,7 @@ export function createModel(host: ModuleHost): SeegModel {
           notify();
         }
       }
+      noteT1(bundle.t1);
       if (bundle.editlog !== null) await readEditlogBanner(bundle.editlog);
       if (bundle.geometry !== null) await readGeometrySidecar(bundle.geometry);
       void anchor;

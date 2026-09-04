@@ -34,6 +34,7 @@ import {
   pt,
   SERIF,
   type Ctx2D,
+  SANS,
   type Extent,
   type Rect,
 } from './mpl';
@@ -68,6 +69,104 @@ export const CT_METAL_HU = 1200;
 export const CT_METAL_HU_MAX = 3000;
 /** `alpha=0.85` on the CT overlay. */
 export const CT_ALPHA = 0.85;
+
+/**
+ * The CT's soft-tissue window, for the panel background when no T1 is open (0.2.2, re-released).
+ *
+ * A reslice with no background volume is a metal overlay on white paper — which is what the owner's
+ * P077 export was, because the T1 was never bound. The CT is always there (the contacts were
+ * localised on it), and −100..300 HU is the standard soft-tissue window: brain and scalp come out
+ * grey, bone and metal saturate. It is worse than a T1 and much better than nothing, and the
+ * export's `detail` says which of the two the panel got.
+ */
+export const CT_SOFT_HU_MIN = -100;
+export const CT_SOFT_HU_MAX = 300;
+
+/** How a panel's background samples are mapped to grey. */
+export type BackgroundWindow = 'percentile' | 'ct-soft';
+
+/** The kind of dataset a background choice landed on, and the sentence explaining it. */
+export interface BackgroundChoice {
+  /** The volume to sample for the grey background, or `null` when there is no volume at all. */
+  datasetId: string | null;
+  window: BackgroundWindow;
+  /** For the export result: which volume the panel's grey came from, or why it has none. */
+  detail: string;
+}
+
+/** The narrow slice of `Dataset` the background rules read. */
+export interface VolumeInfo {
+  id: string;
+  name: string;
+  path?: string | null;
+  kind?: string;
+}
+
+/** Basename on either separator — this module cannot import the editor's copy. */
+function base(path: string): string {
+  return path.split(/[/\\]/).pop() ?? '';
+}
+
+/** Does this dataset's name or path read like a T1 / anatomical volume? */
+export function looksLikeT1(dataset: VolumeInfo): boolean {
+  const text = `${dataset.name} ${dataset.path ?? ''}`;
+  return /(^|[^a-z0-9])(t1w?|anat|mprage)([^a-z0-9]|$)/i.test(text);
+}
+
+/**
+ * The volume the reslice's grey background is sampled from, in the order the owner asked for.
+ *
+ * The bound T1 first (a `load` op's `t1:`, or the sibling the panel discovered) — but *only if it is
+ * open*, because a module cannot open a dataset and `sampleVolume` needs one that is. Then an open
+ * volume that is not the CT and reads like a T1, then any open non-CT volume, and last the CT itself
+ * in its soft-tissue window. The panel is never blank while a CT is bound.
+ */
+export function chooseBackground(
+  datasets: readonly VolumeInfo[],
+  opts: { ctDatasetId: string | null; boundT1Path: string | null; discoveredT1Path: string | null }
+): BackgroundChoice {
+  const volumes = datasets.filter((d) => d.kind === undefined || d.kind === 'volume');
+  const named = (d: VolumeInfo): string => d.name || base(d.path ?? '');
+  const bound =
+    opts.boundT1Path === null
+      ? undefined
+      : volumes.find(
+          (d) => d.path === opts.boundT1Path || base(d.path ?? '') === base(opts.boundT1Path as string)
+        );
+  if (bound !== undefined) {
+    return { datasetId: bound.id, window: 'percentile', detail: `background: ${named(bound)} (T1)` };
+  }
+  const others = volumes.filter((d) => d.id !== opts.ctDatasetId);
+  const anatomical = others.find(looksLikeT1);
+  if (anatomical !== undefined) {
+    return {
+      datasetId: anatomical.id,
+      window: 'percentile',
+      detail: `background: ${named(anatomical)} (open T1, not the bound one)`,
+    };
+  }
+  const any = others[0];
+  if (any !== undefined) {
+    return {
+      datasetId: any.id,
+      window: 'percentile',
+      detail: `background: ${named(any)} (the only open non-CT volume)`,
+    };
+  }
+  if (opts.ctDatasetId !== null) {
+    const ct = volumes.find((d) => d.id === opts.ctDatasetId);
+    const why =
+      opts.discoveredT1Path === null
+        ? 'no T1 is open'
+        : `T1 found at ${opts.discoveredT1Path} but not open — open it to get the grey background`;
+    return {
+      datasetId: opts.ctDatasetId,
+      window: 'ct-soft',
+      detail: `background: ${ct === undefined ? 'the CT' : named(ct)} windowed ${CT_SOFT_HU_MIN}..${CT_SOFT_HU_MAX} HU — ${why}`,
+    };
+  }
+  return { datasetId: null, window: 'percentile', detail: 'background: none — no volume is open' };
+}
 
 /** The gap label's size. seegprep uses 4.5; see `drawResliceFigure` for why this is not that. */
 export const DISTANCE_LABEL_PT = 6.5;
@@ -115,6 +214,19 @@ export const IMPLANT_PANEL_HEIGHT_PX = 788;
 export const RESLICE_SUPTITLE =
   'Per-electrode oblique reslice (T1 grey + CT metal warm; electrode colour = contacts, ' +
   'green □ = tip) — whole lead in one plane, no external wires';
+
+/** The same caption with the one word the CT-window fallback makes true (0.2.2, re-released). */
+export const RESLICE_SUPTITLE_CT_BACKGROUND = RESLICE_SUPTITLE.replace(
+  'T1 grey',
+  'CT soft-tissue grey'
+);
+
+/** The caption for these tiles: the CT wording only when the background really is the CT. */
+export function resliceSuptitle(tiles: readonly ResliceTile[]): string {
+  return tiles.some((t) => t.backgroundWindow === 'ct-soft')
+    ? RESLICE_SUPTITLE_CT_BACKGROUND
+    : RESLICE_SUPTITLE;
+}
 
 /** Narrow slices of `ModuleHost` this module actually calls, for mocking. */
 export interface ExportHost {
@@ -202,7 +314,10 @@ export interface ResliceTile {
   /** Change 1 — the ring and label colour is the electrode's own Group colour, not cyan. */
   color: string;
   grid: ResliceGrid;
-  t1: Float32Array | null;
+  /** The grey background's samples — a T1's when one is open, else the CT's own (0.2.2). */
+  background: Float32Array | null;
+  /** How {@link background} is mapped to grey: the T1's percentiles, or the CT's HU window. */
+  backgroundWindow: BackgroundWindow;
   ct: Float32Array | null;
   marks: ReturnType<typeof resliceMarks>['marks'];
   labels: ReturnType<typeof resliceMarks>['labels'];
@@ -212,7 +327,11 @@ export interface ResliceTile {
 export async function buildResliceTiles(
   host: ExportHost,
   set: ContactSet,
-  opts: { ctDatasetId: string | null; t1DatasetId: string | null }
+  opts: {
+    ctDatasetId: string | null;
+    backgroundDatasetId: string | null;
+    backgroundWindow?: BackgroundWindow;
+  }
 ): Promise<ResliceTile[]> {
   const tiles: ResliceTile[] = [];
   for (const name of groupNames(set)) {
@@ -225,19 +344,23 @@ export async function buildResliceTiles(
       ordered.map((c) => c.position)
     );
     const { marks, labels } = resliceMarks(ordered, basis);
-    const t1 =
-      opts.t1DatasetId === null
-        ? null
-        : await sampleVolumeChunked(host, opts.t1DatasetId, grid.points, { order: 1 });
     const ct =
       opts.ctDatasetId === null
         ? null
         : await sampleVolumeChunked(host, opts.ctDatasetId, grid.points, { order: 1 });
+    // The CT as its own background is one sampling, not two: the same plane, the same order.
+    const background =
+      opts.backgroundDatasetId === null
+        ? null
+        : opts.backgroundDatasetId === opts.ctDatasetId
+          ? ct
+          : await sampleVolumeChunked(host, opts.backgroundDatasetId, grid.points, { order: 1 });
     tiles.push({
       electrode: name,
       color: groupCssColor(set.groups.find((g) => g.name === name)),
       grid,
-      t1,
+      background,
+      backgroundWindow: opts.backgroundWindow ?? 'percentile',
       ct,
       marks,
       labels,
@@ -261,8 +384,11 @@ export function resliceTileImage(tile: ResliceTile): {
   data: Uint8ClampedArray;
 } {
   const { nAlong, nAcross } = tile.grid;
-  const lo = tile.t1 === null ? null : nanPercentile(tile.t1, 2);
-  const hi = tile.t1 === null ? null : nanPercentile(tile.t1, 99);
+  const soft = tile.backgroundWindow === 'ct-soft';
+  const lo =
+    tile.background === null ? null : soft ? CT_SOFT_HU_MIN : nanPercentile(tile.background, 2);
+  const hi =
+    tile.background === null ? null : soft ? CT_SOFT_HU_MAX : nanPercentile(tile.background, 99);
   const windowed = lo !== null && hi !== null && hi > lo;
   const data = new Uint8ClampedArray(nAlong * nAcross * 4);
   for (let iv = 0; iv < nAcross; iv += 1) {
@@ -273,9 +399,10 @@ export function resliceTileImage(tile: ResliceTile): {
       let r = 255;
       let g = 255;
       let b = 255;
-      const t1v = tile.t1?.[src];
-      if (windowed && t1v !== undefined && Number.isFinite(t1v)) {
-        [r, g, b] = grayLut((t1v - (lo as number)) / ((hi as number) - (lo as number)));
+      const bgv = tile.background?.[src];
+      if (windowed && bgv !== undefined && Number.isFinite(bgv)) {
+        const t = (bgv - (lo as number)) / ((hi as number) - (lo as number));
+        [r, g, b] = grayLut(Math.min(1, Math.max(0, t)));
       }
       const ctv = tile.ct?.[src];
       if (ctv !== undefined && Number.isFinite(ctv) && ctv >= CT_METAL_HU) {
@@ -401,7 +528,7 @@ export function drawResliceFigure(
   ctx.save();
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawSuptitle(ctx, width, RESLICE_SUPTITLE, { measure });
+  drawSuptitle(ctx, width, resliceSuptitle(tiles), { measure });
 
   tiles.forEach((tile, index) => {
     const ax = new Axes(layout.boxes[index] as Rect, layout.extents[index] as Extent);
@@ -472,13 +599,25 @@ export async function buildBrainMask(
   host: ExportHost,
   datasetId: string,
   points: readonly vec3[],
-  opts: { labels?: readonly number[]; paddingMm?: number; stepMm?: number } = {}
+  opts: {
+    labels?: readonly number[];
+    paddingMm?: number;
+    stepMm?: number;
+    /** A fixed intensity window instead of Otsu — the CT's soft tissue (0.2.2, re-released). */
+    window?: { min: number; max: number };
+    /** Keep only the mask's largest connected component. See {@link largestComponent}. */
+    largestComponent?: boolean;
+  } = {}
 ): Promise<BrainMask | null> {
   if (points.length === 0) return null;
   const classify = (values: Float32Array): ((v: number) => boolean) | null => {
     if (opts.labels !== undefined) {
       const wanted = new Set(opts.labels);
       return (v) => Number.isFinite(v) && wanted.has(Math.round(v));
+    }
+    if (opts.window !== undefined) {
+      const { min, max } = opts.window;
+      return (v) => Number.isFinite(v) && v >= min && v <= max;
     }
     const threshold = otsuThreshold(values);
     return threshold === null ? null : (v) => Number.isFinite(v) && v > threshold;
@@ -568,7 +707,63 @@ export async function buildBrainMask(
   const tight: vec3 = [coarse.lo[0] - margin, coarse.lo[1] - margin, coarse.lo[2] - margin];
   const tightHi: vec3 = [coarse.hi[0] + margin, coarse.hi[1] + margin, coarse.hi[2] + margin];
   const fine = await sampleBox(tight, tightHi, opts.stepMm ?? BRAIN_STEP_MM);
-  return (fine ?? coarse).mask;
+  const mask = (fine ?? coarse).mask;
+  if (opts.largestComponent !== true) return mask;
+  const largest = largestComponent(mask.data, mask.dims);
+  return largest === null ? null : { ...mask, data: largest };
+}
+
+/**
+ * The mask's largest 6-connected component, or `null` when it has none.
+ *
+ * This is what makes a CT-derived brain usable: a −100..300 HU cut keeps the scalp as well as the
+ * brain, but the skull (well above 300 HU) separates the two, so the brain is its own component and
+ * the biggest one inside a box centred on the implant. Iterative flood fill over an explicit stack —
+ * a recursive one overflows on a million-voxel mask.
+ */
+export function largestComponent(
+  data: Uint8Array,
+  dims: readonly [number, number, number]
+): Uint8Array | null {
+  const [nx, ny, nz] = dims;
+  const seen = new Uint8Array(data.length);
+  const best = new Uint8Array(data.length);
+  const current: number[] = [];
+  const stack: number[] = [];
+  let bestSize = 0;
+  for (let start = 0; start < data.length; start += 1) {
+    if (data[start] === 0 || seen[start] === 1) continue;
+    current.length = 0;
+    stack.length = 0;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const at = stack.pop() as number;
+      current.push(at);
+      const ix = at % nx;
+      const iy = Math.floor(at / nx) % ny;
+      const iz = Math.floor(at / (nx * ny));
+      const push = (jx: number, jy: number, jz: number): void => {
+        if (jx < 0 || jy < 0 || jz < 0 || jx >= nx || jy >= ny || jz >= nz) return;
+        const to = (jz * ny + jy) * nx + jx;
+        if (data[to] === 0 || seen[to] === 1) return;
+        seen[to] = 1;
+        stack.push(to);
+      };
+      push(ix - 1, iy, iz);
+      push(ix + 1, iy, iz);
+      push(ix, iy - 1, iz);
+      push(ix, iy + 1, iz);
+      push(ix, iy, iz - 1);
+      push(ix, iy, iz + 1);
+    }
+    if (current.length > bestSize) {
+      bestSize = current.length;
+      best.fill(0);
+      for (const at of current) best[at] = 1;
+    }
+  }
+  return bestSize === 0 ? null : best;
 }
 
 /** Every lead, recentred on the implant's own centroid — seegprep's `_level`. */
@@ -650,18 +845,31 @@ export function drawImplantFigure(
   brain: { mesh: Mesh; normals: Float32Array } | null,
   drawImage: DrawImageData,
   measure: (text: string) => number,
-  views: readonly Implant3dView[] = IMPLANT3D_VIEWS
+  views: readonly Implant3dView[] = IMPLANT3D_VIEWS,
+  /** Said in the figure when the brain could not be built — never silently omitted (0.2.2). */
+  note: string | null = null
 ): void {
   const size = implantFigureSize(views.length);
   ctx.save();
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size.width, size.height);
-  drawSuptitle(ctx, size.width, implantSuptitle(leads), {
+  const afterSuptitle = drawSuptitle(ctx, size.width, implantSuptitle(leads), {
     sizePt: 16,
     family: SERIF,
     topPx: pt(6),
     measure,
   });
+  // Through `drawSuptitle` for its wrapping: the reason names a path, and a path set as one line
+  // runs off both edges of the canvas — which is what the first cut of this note did.
+  if (note !== null) {
+    drawSuptitle(ctx, size.width, note, {
+      sizePt: 10,
+      family: SANS,
+      topPx: afterSuptitle,
+      color: '#8a3b00',
+      measure,
+    });
+  }
 
   // Measured on the reference PNG: a panel title sits ~60 px into its row band, the first row's
   // band also has to clear the suptitle above it, and the legend lives inside the last row's band.

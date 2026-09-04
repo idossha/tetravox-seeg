@@ -109,6 +109,11 @@ export const seegManifest: ModuleManifest = {
         '{sub}_space-{space}_coordsystem.json',
         '{stem}_editlog.json',
         '{sub}_electrodes-geometry.json',
+        // The subject's T1, from the table as well as from the CT (0.2.2, re-released). The ascent
+        // is the same three levels — `ieeg/` and `ct/` sit at the same depth under `sub-<id>/` —
+        // and without it a session that opened the *table* never learned where the T1 was, which is
+        // how the P077 QC export came out on a white background.
+        '../../../SimNIBS/{sub}/m2m_{id}/T1.nii.gz',
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected.tsv',
         '{derivatives}/tetravox/{sub}/ieeg/{sub}_space-{space}_electrodes_corrected_editlog.json',
         '{derivatives}/tetravox/{sub}/ieeg/figures/{sub}_desc-reslice_qc.pdf',

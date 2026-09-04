@@ -336,11 +336,18 @@ export function drawSuptitle(
   ctx: Ctx2D,
   figureWidthPx: number,
   text: string,
-  opts: { sizePt?: number; family?: string; topPx?: number; measure(text: string): number }
+  opts: {
+    sizePt?: number;
+    family?: string;
+    topPx?: number;
+    /** Anything but black — the QC figures' "no brain" note (0.2.2, re-released). */
+    color?: string;
+    measure(text: string): number;
+  }
 ): number {
   const sizePt = opts.sizePt ?? SUPTITLE_SIZE;
   ctx.save();
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = opts.color ?? '#000000';
   ctx.font = fontSpec(sizePt, { family: opts.family ?? SANS });
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
