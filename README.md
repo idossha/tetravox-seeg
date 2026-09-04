@@ -476,17 +476,38 @@ scripts/        build, validate, fetch, release
 
 ## Releasing
 
+**A release of this extension needs no release of Tetravox.** The flow is:
+
+1. **Tag** — `git tag v<version> && git push origin v<version>`.
+2. **The release workflow publishes the assets.** It runs the same `pnpm run verify` CI runs (a
+   release is not a second, laxer path to the same artefact), then uploads `index.js` and
+   `manifest.json` **under their own sha256** — the content-addressed layout Tetravox uses for
+   sample data, and what lets a download be verified against its own URL — with human-named copies
+   beside them for anyone reading the release page.
+3. **A PR against [`idossha/tetravox-extensions`](https://github.com/idossha/tetravox-extensions)**
+   is opened by the same job, inserting the `versions[]` entry into `index.json` with the hashes it
+   just published, and running the registry's own `validate-index.mjs` before opening it.
+4. **Merging that PR is the publication.** Tetravox fetches the registry's `index.json` at launch
+   and merges it over the copy it shipped with, so the new version appears in File ▸ Extensions…
+   for everyone already running a current build. No core release, no waiting.
+
+Locally, if you are doing it by hand:
+
 ```sh
 pnpm run verify
 scripts/publish-release.sh v0.1.0 --upload
 ```
 
-Every asset is uploaded **under its own sha256** — the content-addressed store layout Tetravox already
-uses for sample data, and what lets a download be verified against its own URL — with a human-named
-copy beside it for people reading the release page. The script then prints the two fragments the other
-repositories need: the `modules.lock` entry for Tetravox (which bundles this module into its packaged
-builds) and the `versions[]` entry for the extensions registry. Both carry the same hashes, and the app
-refuses any file whose bytes do not match.
+**Today `CATALOGUE_TOKEN` is unset**, so step 3 is skipped: the last release published its assets and
+printed the fragments but could not open a PR. Until that secret exists, the job summary's
+`versions[]` fragment is the fallback — paste it into the registry's `index.json` yourself and open
+the PR. Set `CATALOGUE_TOKEN` to a token with `contents: write` and `pull-requests: write` on
+`idossha/tetravox-extensions` and the step opens it automatically.
+
+The app's *shipped* catalogue (`packages/app/src/shared/extensions-index.json` in `idossha/tetravox`)
+is **not** this flow's target any more, and does not need touching: it is only the offline floor a
+build falls back to, refreshed from the registry at core-release time. Targeting it was what made
+every extension release wait on a Tetravox one.
 
 ## Licence
 

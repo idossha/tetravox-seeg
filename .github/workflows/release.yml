@@ -1,5 +1,7 @@
-# A tagged release: verify, then attach the two assets under their own sha256 and print the fragments
-# the Tetravox repository and the extensions registry paste in.
+# A tagged release: verify, attach the two assets under their own sha256, then open the catalogue PR
+# against the extensions **registry** — which is what makes the version installable without a
+# Tetravox release. The fragments are still printed in the job summary as the fallback for a run with
+# no `CATALOGUE_TOKEN`.
 name: release
 
 on:
@@ -61,19 +63,26 @@ jobs:
 
       # ---- the catalogue, opened as a PR rather than left to somebody's memory ----------------
       #
-      # `packages/app/src/shared/extensions-index.json` in the app repository is what File >
-      # Extensions... offers offline, and it was refreshed by hand from the fragment above. 0.1.4
-      # shipped and was never catalogued, so nobody was offered it. The paste also *cannot* happen
-      # until the release exists -- the app verifies a download against the sha256 in its own URL --
-      # which puts it after the point everyone treats the release as finished.
+      # **Against `idossha/tetravox-extensions`, not the app repository.** The app fetches that
+      # registry's `index.json` at launch and merges it over the copy it shipped with, so a version
+      # that lands there is offered the day the PR is merged. The old target -- the app's shipped
+      # copy -- is only read when there is no network, and a new entry in it reaches nobody until a
+      # *core* release is built and downloaded. That is why every extension release has been
+      # dragging a Tetravox release behind it, and it is the whole point of this change.
+      #
+      # The paste also *cannot* happen before the release exists -- the app verifies a download
+      # against the sha256 in its own URL -- which puts it after the point everyone treats the
+      # release as finished. Hence a job step and not a checklist line.
       #
       # A PR and not a push: the catalogue is another repository's file, it goes through that repo's
-      # CI, and a human still says yes.
-      - name: Check out the app repository
+      # validator, and a human still says yes. With `CATALOGUE_TOKEN` unset (it is, today) every
+      # step below is skipped and the job summary's fragments above remain the fallback: paste them
+      # into the registry's `index.json` by hand.
+      - name: Check out the extensions registry
         if: env.CATALOGUE_TOKEN != ''
         uses: actions/checkout@v5
         with:
-          repository: idossha/tetravox
+          repository: idossha/tetravox-extensions
           token: ${{ secrets.CATALOGUE_TOKEN }}
           path: .catalogue
 
@@ -84,8 +93,22 @@ jobs:
           node scripts/print-fragments.mjs "${{ inputs.tag || github.ref_name }}" "${{ github.repository }}" --registry-json \
             "index.js $(wc -c < dist/index.js) $(sha256sum dist/index.js | cut -d' ' -f1)" \
             "manifest.json $(wc -c < dist/manifest.json) $(sha256sum dist/manifest.json | cut -d' ' -f1)" > entry.json
-          node scripts/insert-catalogue-entry.mjs \
-            .catalogue/packages/app/src/shared/extensions-index.json entry.json
+          node scripts/insert-catalogue-entry.mjs .catalogue/index.json entry.json --id tetravox.seeg
+
+      # The registry owns the rules an entry must satisfy -- the asset is named by its own sha256,
+      # the URL is under the repo the entry claims, both files are present, versions sorted oldest
+      # first. Running *its* validator here means a malformed entry fails in this job, where the
+      # numbers came from, instead of in a review round trip. `|| true` on the absence of the script
+      # only: a registry that has not got one yet must not break a release.
+      - name: Validate the entry against the registry's own rules
+        if: env.CATALOGUE_TOKEN != '' && steps.entry.outputs.changed == 'true'
+        working-directory: .catalogue
+        run: |
+          if [ -f scripts/validate-index.mjs ]; then
+            node scripts/validate-index.mjs
+          else
+            echo 'the registry ships no validate-index.mjs; skipping'
+          fi
 
       - name: Open the catalogue PR
         if: env.CATALOGUE_TOKEN != '' && steps.entry.outputs.changed == 'true'
@@ -103,7 +126,7 @@ jobs:
           # keep whatever indentation the YAML gave them, and four leading spaces is a markdown code
           # block -- the PR body is read by people, so it has to survive the trip intact.
           cat > /tmp/commit-msg.txt <<MSG
-          chore(extensions): catalogue sEEG ${VERSION}
+          chore(catalogue): sEEG contacts ${VERSION}
 
           Opened by tetravox-seeg's release workflow from the assets it had just
           published and verified. Every hash is the one the release was checked
@@ -115,14 +138,14 @@ jobs:
 
           The hashes come off the published assets, so the entry is verifiable the moment it lands: the app refuses any download whose bytes do not match the sha256 in its own URL. \`permissions\` is \`derivePermissions()\` over the shipped manifest rather than a copy of the previous release's.
 
-          Merging makes ${VERSION} appear in File > Extensions... for anyone running a build that ships this catalogue.
+          Merging makes ${VERSION} appear in File > Extensions... for everyone on a current Tetravox, with no core release: the app fetches this index at launch and merges it over the copy it shipped with.
           BODY
 
           git config user.name 'tetravox-seeg release'
           git config user.email 'noreply@github.com'
           git switch -c "$BRANCH"
-          git add packages/app/src/shared/extensions-index.json
+          git add index.json
           git commit -F /tmp/commit-msg.txt
           git push -u origin "$BRANCH"
-          gh pr create --repo idossha/tetravox --base main --head "$BRANCH" \
-            --title "chore(extensions): catalogue sEEG ${VERSION}" --body-file /tmp/pr-body.md
+          gh pr create --repo idossha/tetravox-extensions --base main --head "$BRANCH" \
+            --title "chore(catalogue): sEEG contacts ${VERSION}" --body-file /tmp/pr-body.md
