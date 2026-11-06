@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 — 2026-11-06
+
+- **Pressing Esc twice after Add no longer leaves you adding contacts.** With a contact selected, the
+  second Esc went back to Add instead of Select, so the next click placed a new contact where it was
+  meant to select one.
+
 ## 0.2.2 — 2026-09-03
 
 **re-released: 2026-09-04.** The QC figures no longer come out blank when the T1 is not open, and
