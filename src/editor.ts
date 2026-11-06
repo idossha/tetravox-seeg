@@ -2338,6 +2338,9 @@ export function createModel(host: ModuleHost): SeegModel {
         const hadGuide = dragBase !== null;
         selectedId = null;
         dragBase = null;
+        // Before the repaint: it fires `layers`, which re-arms this mode. Esc's first step emits no
+        // event, so `wantMode` can still say `place` here, and a click would then add a contact.
+        if (reason !== 'selection') wantMode = 'select';
         if (hadGuide) writeLayer();
         if (reason === 'selection') {
           notify();
